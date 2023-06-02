@@ -1,6 +1,6 @@
 -- | Eliminates case defaults by adding an alternative for all possible
 -- constructors. Literal cases are preserved as-is.
-module Agda.Compiler.Treeless.EliminateDefaults where
+module Agda.Syntax.Treeless.EliminateDefaults where
 
 import Control.Monad
 import qualified Data.List as List
@@ -9,8 +9,6 @@ import Agda.Syntax.Treeless
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Substitute
-
-import Agda.Compiler.Treeless.Subst () --instance only
 
 eliminateCaseDefaults :: TTerm -> TCM TTerm
 eliminateCaseDefaults = tr

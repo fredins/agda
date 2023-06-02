@@ -1,5 +1,5 @@
 -- | Converts case matches on literals to if cascades with equality comparisons.
-module Agda.Compiler.Treeless.EliminateLiteralPatterns where
+module Agda.Syntax.Treeless.EliminateLiteralPatterns where
 
 import Data.Maybe
 

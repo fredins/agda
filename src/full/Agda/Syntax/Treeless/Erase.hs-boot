@@ -1,4 +1,4 @@
-module Agda.Compiler.Treeless.Erase where
+module Agda.Syntax.Treeless.Erase where
 
 import Agda.TypeChecking.Monad.Base (TCM)
 import Agda.Syntax.Abstract.Name (QName)

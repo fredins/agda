@@ -1,4 +1,4 @@
-module Agda.Compiler.Treeless.AsPatterns (recoverAsPatterns) where
+module Agda.Syntax.Treeless.AsPatterns (recoverAsPatterns) where
 
 import Control.Monad.Reader
 

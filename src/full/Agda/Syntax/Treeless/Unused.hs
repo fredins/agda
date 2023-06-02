@@ -1,5 +1,5 @@
 
-module Agda.Compiler.Treeless.Unused
+module Agda.Syntax.Treeless.Unused
   ( usedArguments
   , stripUnusedArguments
   ) where
@@ -19,8 +19,6 @@ import Agda.Syntax.Common
 import Agda.Syntax.Treeless
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Substitute
-
-import Agda.Compiler.Treeless.Pretty () -- instance only
 
 import Agda.Utils.Function ( iterateUntilM )
 import Agda.Utils.List     ( downFrom )

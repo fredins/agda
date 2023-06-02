@@ -1,4 +1,4 @@
-module Agda.Compiler.Treeless.Simplify (simplifyTTerm) where
+module Agda.Syntax.Treeless.Simplify (simplifyTTerm) where
 
 import Control.Arrow        ( (***), second )
 import Control.Monad        ( (>=>), guard )
@@ -6,13 +6,12 @@ import Control.Monad.Reader ( MonadReader(..), asks, Reader, runReader )
 import qualified Data.List as List
 
 import Agda.Syntax.Treeless
+import Agda.Syntax.Treeless.Compare
 import Agda.Syntax.Literal
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Primitive
 import Agda.TypeChecking.Substitute
-
-import Agda.Compiler.Treeless.Compare
 
 import Agda.Utils.List
 import Agda.Utils.Maybe

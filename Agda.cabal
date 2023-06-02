@@ -456,20 +456,6 @@ library
       Agda.Compiler.MAlonzo.Primitives
       Agda.Compiler.MAlonzo.Strict
       Agda.Compiler.ToTreeless
-      Agda.Compiler.Treeless.AsPatterns
-      Agda.Compiler.Treeless.Builtin
-      Agda.Compiler.Treeless.Compare
-      Agda.Compiler.Treeless.EliminateDefaults
-      Agda.Compiler.Treeless.EliminateLiteralPatterns
-      Agda.Compiler.Treeless.Erase
-      Agda.Compiler.Treeless.GuardsToPrims
-      Agda.Compiler.Treeless.Identity
-      Agda.Compiler.Treeless.NormalizeNames
-      Agda.Compiler.Treeless.Pretty
-      Agda.Compiler.Treeless.Simplify
-      Agda.Compiler.Treeless.Subst
-      Agda.Compiler.Treeless.Uncase
-      Agda.Compiler.Treeless.Unused
       Agda.ImpossibleTest
       Agda.Interaction.AgdaTop
       Agda.Interaction.Base
@@ -569,6 +555,18 @@ library
       Agda.Syntax.Translation.InternalToAbstract
       Agda.Syntax.Translation.ReflectedToAbstract
       Agda.Syntax.Treeless
+      Agda.Syntax.Treeless.AsPatterns
+      Agda.Syntax.Treeless.Builtin
+      Agda.Syntax.Treeless.Compare
+      Agda.Syntax.Treeless.EliminateDefaults
+      Agda.Syntax.Treeless.EliminateLiteralPatterns
+      Agda.Syntax.Treeless.Erase
+      Agda.Syntax.Treeless.GuardsToPrims
+      Agda.Syntax.Treeless.Identity
+      Agda.Syntax.Treeless.NormalizeNames
+      Agda.Syntax.Treeless.Simplify
+      Agda.Syntax.Treeless.Uncase
+      Agda.Syntax.Treeless.Unused
       Agda.Termination.CallGraph
       Agda.Termination.CallMatrix
       Agda.Termination.CutOff

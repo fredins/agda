@@ -1,6 +1,6 @@
 {-# LANGUAGE PatternSynonyms #-}
 
-module Agda.Compiler.Treeless.Erase
+module Agda.Syntax.Treeless.Erase
        ( eraseTerms
        , computeErasedConstructorArgs
        , isErasable
@@ -17,6 +17,7 @@ import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Position
 import Agda.Syntax.Treeless
+import Agda.Syntax.Treeless.Unused
 import Agda.Syntax.Literal
 
 import Agda.TypeChecking.Substitute
@@ -27,8 +28,6 @@ import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Primitive
 
 import {-# SOURCE #-} Agda.Compiler.Backend
-import Agda.Compiler.Treeless.Subst
-import Agda.Compiler.Treeless.Unused
 
 import Agda.Utils.Functor
 import Agda.Utils.Lens

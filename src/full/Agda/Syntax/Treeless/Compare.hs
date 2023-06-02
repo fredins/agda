@@ -1,8 +1,7 @@
-module Agda.Compiler.Treeless.Compare (equalTerms) where
+module Agda.Syntax.Treeless.Compare (equalTerms) where
 
 import Agda.Syntax.Treeless
 import Agda.TypeChecking.Substitute
-import Agda.Compiler.Treeless.Subst () --instance only
 
 equalTerms :: TTerm -> TTerm -> Bool
 equalTerms u v =

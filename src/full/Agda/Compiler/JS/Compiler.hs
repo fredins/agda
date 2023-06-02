@@ -38,6 +38,10 @@ import Agda.Syntax.Internal
 import Agda.Syntax.Literal       ( Literal(..) )
 import Agda.Syntax.TopLevelModuleName (TopLevelModuleName(..))
 import Agda.Syntax.Treeless      ( ArgUsage(..), filterUsed )
+import Agda.Syntax.Treeless.EliminateDefaults
+import Agda.Syntax.Treeless.EliminateLiteralPatterns
+import Agda.Syntax.Treeless.GuardsToPrims
+import Agda.Syntax.Treeless.Erase ( computeErasedConstructorArgs )
 import qualified Agda.Syntax.Treeless as T
 
 import Agda.TypeChecking.Monad
@@ -63,11 +67,6 @@ import Agda.Utils.Size (size)
 
 import Agda.Compiler.Common as CC
 import Agda.Compiler.ToTreeless
-import Agda.Compiler.Treeless.EliminateDefaults
-import Agda.Compiler.Treeless.EliminateLiteralPatterns
-import Agda.Compiler.Treeless.GuardsToPrims
-import Agda.Compiler.Treeless.Erase ( computeErasedConstructorArgs )
-import Agda.Compiler.Treeless.Subst ()
 import Agda.Compiler.Backend (Backend(..), Backend'(..), Recompile(..))
 
 import Agda.Compiler.JS.Syntax

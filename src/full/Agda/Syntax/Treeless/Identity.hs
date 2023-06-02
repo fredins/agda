@@ -1,5 +1,5 @@
 
-module Agda.Compiler.Treeless.Identity
+module Agda.Syntax.Treeless.Identity
   ( detectIdentityFunctions ) where
 
 import Prelude hiding ((!!))  -- don't use partial functions

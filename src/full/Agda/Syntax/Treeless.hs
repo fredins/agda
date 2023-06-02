@@ -13,7 +13,12 @@ module Agda.Syntax.Treeless
 
 import Control.Arrow (first, second)
 import Control.DeepSeq
+import Control.Monad.Reader
 
+import Data.Map (Map)
+import Data.Maybe (fromMaybe, isJust)
+import qualified Data.Map as Map
+import Data.Semigroup (All(..), Any(..) )
 import Data.Word
 
 import GHC.Generics (Generic)
@@ -22,6 +27,10 @@ import Agda.Syntax.Position
 import Agda.Syntax.Literal
 import Agda.Syntax.Common
 import Agda.Syntax.Abstract.Name
+import Agda.TypeChecking.Substitute
+import Agda.Utils.Impossible
+import Agda.Utils.List
+import Agda.Utils.Pretty
 
 data Compiled = Compiled
   { cTreeless :: TTerm
@@ -100,6 +109,13 @@ data TPrim
   | PSeq
   | PITo64 | P64ToI
   deriving (Show, Eq, Ord, Generic)
+
+instance Pretty Compiled where
+  pretty Compiled {cTreeless, cArgUsage} =
+    "Compiled {" <?> vcat
+      [ "cTreeless   =" <?> pretty cTreeless
+      , "funCompiled =" <?> pshow cArgUsage
+      ] <?> "}"
 
 isPrimEq :: TPrim -> Bool
 isPrimEq p = p `elem` [PEqI, PEqF, PEqS, PEqC, PEqQ, PEq64]
@@ -278,6 +294,311 @@ filterUsed = curry $ \case
   (_ , [])   -> []
   (ArgUsed   : used, a : args) -> a : filterUsed used args
   (ArgUnused : used, a : args) ->     filterUsed used args
+
+
+-- * Pretty instances
+---------------------------------------------------------------------------
+
+data PEnv = PEnv { pPrec :: Int
+                 , pFresh :: [String]
+                 , pBound :: [String] }
+
+type P = Reader PEnv
+
+--UNUSED Liang-Ting Chen 2019-07-16
+--withName :: (String -> P a) -> P a
+--withName k = withNames 1 $ \[x] -> k x
+
+withNames :: Int -> ([String] -> P a) -> P a
+withNames n k = do
+  (xs, ys) <- asks $ splitAt n . pFresh
+  local (\ e -> e { pFresh = ys }) (k xs)
+
+-- | Don't generate fresh names for unused variables.
+withNames' :: HasFree a => Int -> a -> ([String] -> P b) -> P b
+withNames' n tm k = withNames n' $ k . insBlanks
+  where
+    fv = freeVars tm
+    n'  = length $ filter (< n) $ Map.keys fv
+    insBlanks = go n
+      where
+        go 0 _ = []
+        go i xs0@(~(x : xs))
+          | Map.member (i - 1) fv = x   : go (i - 1) xs
+          | otherwise             = "_" : go (i - 1) xs0
+
+bindName :: String -> P a -> P a
+bindName x = local $ \ e -> e { pBound = x : pBound e }
+
+bindNames :: [String] -> P a -> P a
+bindNames xs p = foldr bindName p xs
+
+paren :: Int -> P Doc -> P Doc
+paren p doc = do
+  n <- asks pPrec
+  (if p < n then parens else id) <$> doc
+
+prec :: Int -> P a -> P a
+prec p = local $ \ e -> e { pPrec = p }
+
+name :: Int -> P String
+name x = asks
+  $ (\ xs -> indexWithDefault __IMPOSSIBLE__ xs x)
+  . (++ map (("^" ++) . show) [1..])
+  . pBound
+
+runP :: P a -> a
+runP p = runReader p PEnv{ pPrec = 0, pFresh = names, pBound = [] }
+  where
+    names = [ x ++ i | i <- "" : map show [1..], x <- map (:[]) ['a'..'z'] ]
+
+instance Pretty TTerm where
+  prettyPrec p t = runP $ prec p (pTerm t)
+
+opName :: TPrim -> String
+opName PAdd = "+"
+opName PSub = "-"
+opName PMul = "*"
+opName PQuot = "quot"
+opName PRem = "rem"
+opName PGeq = ">="
+opName PLt  = "<"
+opName PEqI = "==I"
+opName PAdd64 = "+64"
+opName PSub64 = "-64"
+opName PMul64 = "*64"
+opName PQuot64 = "quot64"
+opName PRem64 = "rem64"
+opName PLt64  = "<64"
+opName PEq64 = "==64"
+opName PEqF = "==F"
+opName PEqS = "==S"
+opName PEqC = "==C"
+opName PEqQ = "==Q"
+opName PIf  = "if_then_else_"
+opName PSeq = "seq"
+opName PITo64 = "toWord64"
+opName P64ToI = "fromWord64"
+
+
+isInfix :: TPrim -> Maybe (Int, Int, Int)
+isInfix op =
+  case op of
+    PMul -> l 7
+    PAdd -> l 6
+    PSub -> l 6
+    PGeq -> non 4
+    PLt  -> non 4
+    PMul64 -> l 7
+    PAdd64 -> l 6
+    PSub64 -> l 6
+    PLt64  -> non 4
+    p | isPrimEq p -> non 4
+    _    -> Nothing
+  where
+    l n   = Just (n, n, n + 1)
+    r n   = Just (n, n + 1, n) -- NB:: Defined but not used
+    non n = Just (n, n + 1, n + 1)
+
+pTerm' :: Int -> TTerm -> P Doc
+pTerm' p = prec p . pTerm
+
+pTerm :: TTerm -> P Doc
+pTerm = \case
+  TVar x -> text <$> name x
+  TApp (TPrim op) [a, b] | Just (c, l, r) <- isInfix op ->
+    paren c $ sep <$> sequence [ pTerm' l a
+                               , pure $ text $ opName op
+                               , pTerm' r b ]
+  TApp (TPrim PIf) [a, b, c] ->
+    paren 0 $ (\ a b c -> sep [ "if" <+> a
+                              , nest 2 $ "then" <+> b
+                              , nest 2 $ "else" <+> c ])
+              <$> pTerm' 0 a
+              <*> pTerm' 0 b
+              <*> pTerm c
+  TDef f -> pure $ pretty f
+  TCon c -> pure $ pretty c
+  TLit l -> pure $ pretty l
+  TPrim op | isJust (isInfix op) -> pure $ text ("_" ++ opName op ++ "_")
+           | otherwise -> pure $ text (opName op)
+  TApp f es ->
+    paren 9 $ (\a bs -> sep [a, nest 2 $ fsep bs])
+              <$> pTerm' 9 f
+              <*> mapM (pTerm' 10) es
+  t@TLam{} -> paren 0 $ withNames' n b $ \ xs -> bindNames xs $
+    (\b -> sep [ text ("λ " ++ unwords xs ++ " →")
+               , nest 2 b ]) <$> pTerm' 0 b
+    where
+      (n, b) = tLamView t
+  t@TLet{} -> paren 0 $ withNames (length es) $ \ xs ->
+    (\ (binds, b) -> sep [ "let" <+> vcat [ sep [ text x <+> "="
+                                                , nest 2 e ] | (x, e) <- binds ]
+                              <+> "in", b ])
+      <$> pLets (zip xs es) b
+    where
+      (es, b) = tLetView t
+
+      pLets [] b = ([],) <$> pTerm' 0 b
+      pLets ((x, e) : bs) b = do
+        e <- pTerm' 0 e
+        first ((x, e) :) <$> bindName x (pLets bs b)
+
+  TCase x _ def alts -> paren 0 $
+    (\ sc alts defd ->
+      sep [ "case" <+> sc <+> "of"
+          , nest 2 $ vcat (alts ++ [ "_ →" <+> defd | null alts || def /= TError TUnreachable ]) ]
+    ) <$> pTerm' 0 (TVar x)
+      <*> mapM pAlt alts
+      <*> pTerm' 0 def
+    where
+      pAlt (TALit l b) = pAlt' <$> pTerm' 0 (TLit l) <*> pTerm' 0 b
+      pAlt (TAGuard g b) =
+        pAlt' <$> (("_" <+> "|" <+>) <$> pTerm' 0 g)
+              <*> (pTerm' 0 b)
+      pAlt (TACon c a b) =
+        withNames' a b $ \ xs -> bindNames xs $
+        pAlt' <$> pTerm' 0 (TApp (TCon c) [TVar i | i <- reverse [0..a - 1]])
+              <*> pTerm' 0 b
+      pAlt' p b = sep [p <+> "→", nest 2 b]
+
+  TUnit -> pure "()"
+  TSort -> pure "Set"
+  TErased -> pure "_"
+  TError err -> paren 9 $ pure $ "error" <+> text (show (show err))
+  TCoerce t -> paren 9 $ ("coe" <+>) <$> pTerm' 10 t
+
+-- DeBruijn, Subst, and HasFree instances
+---------------------------------------------------------------------------
+
+instance DeBruijn TTerm where
+  deBruijnVar = TVar
+  deBruijnView (TVar i) = Just i
+  deBruijnView _ = Nothing
+
+instance Subst TTerm where
+  type SubstArg TTerm = TTerm
+
+  applySubst IdS = id
+  applySubst rho = \case
+      t@TDef{}    -> t
+      t@TLit{}    -> t
+      t@TCon{}    -> t
+      t@TPrim{}   -> t
+      t@TUnit{}   -> t
+      t@TSort{}   -> t
+      t@TErased{} -> t
+      t@TError{}  -> t
+      TVar i         -> lookupS rho i
+      TApp f ts      -> tApp (applySubst rho f) (applySubst rho ts)
+      TLam b         -> TLam (applySubst (liftS 1 rho) b)
+      TLet e b       -> TLet (applySubst rho e) (applySubst (liftS 1 rho) b)
+      TCase i t d bs ->
+        case applySubst rho (TVar i) of
+          TVar j  -> TCase j t (applySubst rho d) (applySubst rho bs)
+          e       -> TLet e $ TCase 0 t (applySubst rho' d) (applySubst rho' bs)
+            where rho' = wkS 1 rho
+      TCoerce e -> TCoerce (applySubst rho e)
+    where
+      tApp (TPrim PSeq) [TErased, b] = b
+      tApp f ts = TApp f ts
+
+instance Subst TAlt where
+  type SubstArg TAlt = TTerm
+  applySubst rho (TACon c i b) = TACon c i (applySubst (liftS i rho) b)
+  applySubst rho (TALit l b)   = TALit l (applySubst rho b)
+  applySubst rho (TAGuard g b) = TAGuard (applySubst rho g) (applySubst rho b)
+
+newtype UnderLambda = UnderLambda Any
+  deriving (Eq, Ord, Show, Semigroup, Monoid)
+
+newtype SeqArg = SeqArg All
+  deriving (Eq, Ord, Show, Semigroup, Monoid)
+
+data Occurs = Occurs Int UnderLambda SeqArg
+  deriving (Eq, Ord, Show)
+
+once :: Occurs
+once = Occurs 1 mempty (SeqArg $ All False)
+
+inSeq :: Occurs -> Occurs
+inSeq (Occurs n l _) = Occurs n l mempty
+
+underLambda :: Occurs -> Occurs
+underLambda o = o <> Occurs 0 (UnderLambda $ Any True) mempty
+
+instance Semigroup Occurs where
+  Occurs a k s <> Occurs b l t = Occurs (a + b) (k <> l) (s <> t)
+
+instance Monoid Occurs where
+  mempty  = Occurs 0 mempty mempty
+  mappend = (<>)
+
+
+-- Andreas, 2019-07-10: this free variable computation should be rewritten
+-- in the style of TypeChecking.Free.Lazy.
+-- https://github.com/agda/agda/commit/03eb3945114a4ccdb449f22d69db8d6eaa4699b8#commitcomment-34249120
+
+class HasFree a where
+  freeVars :: a -> Map Int Occurs
+
+freeIn :: HasFree a => Int -> a -> Bool
+freeIn i x = Map.member i (freeVars x)
+
+occursIn :: HasFree a => Int -> a -> Occurs
+occursIn i x = fromMaybe mempty $ Map.lookup i (freeVars x)
+
+instance HasFree Int where
+  freeVars x = Map.singleton x once
+
+instance HasFree a => HasFree [a] where
+  freeVars xs = Map.unionsWith mappend $ map freeVars xs
+
+instance (HasFree a, HasFree b) => HasFree (a, b) where
+  freeVars (x, y) = Map.unionWith mappend (freeVars x) (freeVars y)
+
+data Binder a = Binder Int a
+
+instance HasFree a => HasFree (Binder a) where
+  freeVars (Binder 0 x) = freeVars x
+  freeVars (Binder k x) = Map.filterWithKey (\ k _ -> k >= 0) $ Map.mapKeysMonotonic (subtract k) $ freeVars x
+
+newtype InSeq a = InSeq a
+
+instance HasFree a => HasFree (InSeq a) where
+  freeVars (InSeq x) = inSeq <$> freeVars x
+
+instance HasFree TTerm where
+  freeVars = \case
+    TDef{}    -> Map.empty
+    TLit{}    -> Map.empty
+    TCon{}    -> Map.empty
+    TPrim{}   -> Map.empty
+    TUnit{}   -> Map.empty
+    TSort{}   -> Map.empty
+    TErased{} -> Map.empty
+    TError{}  -> Map.empty
+    TVar i         -> freeVars i
+    TApp (TPrim PSeq) [TVar x, b] -> freeVars (InSeq x, b)
+    TApp f ts      -> freeVars (f, ts)
+    TLam b         -> underLambda <$> freeVars (Binder 1 b)
+    TLet e b       -> freeVars (e, Binder 1 b)
+    TCase i _ d bs -> freeVars (i, (d, bs))
+    TCoerce t      -> freeVars t
+
+instance HasFree TAlt where
+  freeVars = \case
+    TACon _ i b -> freeVars (Binder i b)
+    TALit _ b   -> freeVars b
+    TAGuard g b -> freeVars (g, b)
+
+-- | Strenghtening.
+tryStrengthen :: (HasFree a, Subst a) => Int -> a -> Maybe a
+tryStrengthen n t =
+  case Map.minViewWithKey (freeVars t) of
+    Just ((i, _), _) | i < n -> Nothing
+    _ -> Just $ applySubst (strengthenS impossible n) t
+
 
 -- NFData instances
 ---------------------------------------------------------------------------

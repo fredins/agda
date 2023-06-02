@@ -1,9 +1,8 @@
-module Agda.Compiler.Treeless.Uncase (caseToSeq) where
+module Agda.Syntax.Treeless.Uncase (caseToSeq) where
 
 import Agda.Syntax.Treeless
+import Agda.Syntax.Treeless.Compare
 import Agda.TypeChecking.Substitute
-import Agda.Compiler.Treeless.Subst
-import Agda.Compiler.Treeless.Compare
 
 import Agda.Utils.List
 

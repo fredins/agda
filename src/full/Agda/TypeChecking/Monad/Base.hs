@@ -73,7 +73,7 @@ import Agda.Syntax.Parser (ParseWarning)
 import Agda.Syntax.Parser.Monad (parseWarningName)
 import Agda.Syntax.TopLevelModuleName
   (RawTopLevelModuleName, TopLevelModuleName)
-import Agda.Syntax.Treeless (Compiled)
+import {-# SOURCE #-} Agda.Syntax.Treeless (Compiled)
 import Agda.Syntax.Notation
 import Agda.Syntax.Position
 import Agda.Syntax.Scope.Base
@@ -89,7 +89,7 @@ import Agda.TypeChecking.Free.Lazy (Free(freeVars'), underBinder', underBinder)
 -- This only matters when interpreted in ghci, which sees all of the module's
 -- exported symbols, not just the ones defined in the `.hs-boot`. See the
 -- comment in ../../Compiler/Backend.hs-boot
-import {-# SOURCE #-} Agda.Compiler.Backend hiding (Args)
+import {-# SOURCE #-} Agda.Compiler.Backend (Backend)
 
 import Agda.Interaction.Options
 import Agda.Interaction.Options.Warnings
@@ -2777,7 +2777,7 @@ instance Pretty FunctionData where
       [ "funClauses      =" <?> vcat (map pretty funClauses)
       , "funCompiled     =" <?> pretty funCompiled
       , "funSplitTree    =" <?> pretty funSplitTree
-      , "funTreeless     =" <?> pshow funTreeless
+      , "funTreeless     =" <?> pretty funTreeless
       , "funInv          =" <?> pretty funInv
       , "funMutual       =" <?> pshow funMutual
       , "funAbstr        =" <?> pshow funAbstr

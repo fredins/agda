@@ -21,6 +21,13 @@ import Agda.Syntax.Internal as I
 import Agda.Syntax.Literal
 import qualified Agda.Syntax.Treeless as C
 import Agda.Syntax.Treeless (TTerm, EvaluationStrategy, ArgUsage(..))
+import Agda.Syntax.Treeless.AsPatterns
+import Agda.Syntax.Treeless.Builtin
+import Agda.Syntax.Treeless.Erase
+import Agda.Syntax.Treeless.Identity
+import Agda.Syntax.Treeless.Simplify
+import Agda.Syntax.Treeless.Uncase
+import Agda.Syntax.Treeless.Unused
 
 import Agda.TypeChecking.CompiledClause as CC
 import qualified Agda.TypeChecking.CompiledClause.Compile as CC
@@ -31,14 +38,6 @@ import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Records (getRecordConstructor)
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
-
-import Agda.Compiler.Treeless.AsPatterns
-import Agda.Compiler.Treeless.Builtin
-import Agda.Compiler.Treeless.Erase
-import Agda.Compiler.Treeless.Identity
-import Agda.Compiler.Treeless.Simplify
-import Agda.Compiler.Treeless.Uncase
-import Agda.Compiler.Treeless.Unused
 
 import Agda.Utils.Function
 import Agda.Utils.Functor

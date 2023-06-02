@@ -41,8 +41,6 @@ import Agda.Compiler.MAlonzo.HaskellTypes
 import Agda.Compiler.MAlonzo.Pragmas
 import Agda.Compiler.MAlonzo.Strict
 import Agda.Compiler.ToTreeless
-import Agda.Compiler.Treeless.Unused
-import Agda.Compiler.Treeless.Erase
 import Agda.Compiler.Backend
 
 import Agda.Interaction.Imports
@@ -55,6 +53,8 @@ import Agda.Syntax.Internal.Names (namesIn)
 import qualified Agda.Syntax.Treeless as T
 import Agda.Syntax.Literal
 import Agda.Syntax.TopLevelModuleName
+import Agda.Syntax.Treeless.Unused
+import Agda.Syntax.Treeless.Erase
 
 import Agda.TypeChecking.Datatypes
 import Agda.TypeChecking.Primitive (getBuiltinName)

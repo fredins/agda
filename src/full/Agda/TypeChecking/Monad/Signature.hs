@@ -33,6 +33,7 @@ import Agda.Syntax.Internal as I
 import Agda.Syntax.Internal.Names
 import Agda.Syntax.Position
 import Agda.Syntax.Treeless (Compiled(..), TTerm, ArgUsage)
+import {-# SOURCE #-} Agda.Syntax.Treeless.Erase
 
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.Builtin
@@ -58,7 +59,6 @@ import {-# SOURCE #-} Agda.TypeChecking.ProjectionLike
 import {-# SOURCE #-} Agda.TypeChecking.Reduce
 import {-# SOURCE #-} Agda.TypeChecking.Opacity
 
-import {-# SOURCE #-} Agda.Compiler.Treeless.Erase
 import {-# SOURCE #-} Agda.Compiler.Builtin
 
 import Agda.Utils.CallStack.Base
