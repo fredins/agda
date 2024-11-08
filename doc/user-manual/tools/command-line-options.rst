@@ -17,8 +17,15 @@ General options
 
 .. option:: --help[={TOPIC}], -?[{TOPIC}]
 
-     Show basically this help, or more help about ``TOPIC``. Current
-     topics available: ``warning``.
+     Show basically this help, or more help about ``TOPIC``.
+     Available topics:
+
+     - ``error``:
+       List the names of Agda's errors.
+
+     - ``warning``:
+       List warning groups and individual warnings and their default status.
+       Instruct how to toggle benign warnings.
 
 .. option:: --interaction
 
@@ -750,7 +757,7 @@ Pattern matching and equality
      definitional equalities unless marked ``CATCHALL`` (see
      :ref:`case-trees`).
 
-     Default since 2.7.0: ``--exact-split``.
+     Default: ``--no-exact-split``.
 
 .. option:: --hidden-argument-puns, --no-hidden-argument-puns
 
@@ -841,11 +848,13 @@ Pattern matching and equality
      Prevent interactive case splitting from replacing variables with
      dot patterns (see :ref:`dot-patterns`).
 
+     Default since 2.7.0.
+
 .. option:: --no-keep-pattern-variables
 
      .. versionadded:: 2.6.4
 
-     Default, opposite of :option:`--keep-pattern-variables`.
+     Opposite of :option:`--keep-pattern-variables`.
 
 .. option:: --infer-absurd-clauses, --no-infer-absurd-clauses
 
@@ -1136,10 +1145,13 @@ Other features
 
      .. versionadded:: 2.6.3
 
-     Save [or do not save] meta-variables in ``.agdai`` files. The
-     alternative is to expand the meta-variables to their definitions.
-     This option can affect performance. The default is to not save
-     the meta-variables.
+     Save [or do not save] meta-variables in ``.agdai`` files. Not saving means
+     that all meta-variable solutions are inlined into the interface. Currently,
+     even if :option:`--save-metas` is used, very few meta-variables are
+     actually saved, and this option is more like an anticipation of possible
+     future optimizations.
+
+     Default: :option:`--no-save-metas`.
 
 Erasure
 ~~~~~~~
@@ -1224,7 +1236,7 @@ Benign warnings
 Individual non-fatal warnings can be turned on and off by ``-W {NAME}`` and ``-W no{NAME}`` respectively.
 The list containing any warning ``NAME`` can be produced by ``agda --help=warning``:
 
-.. option:: AbsurdPatternRequiresNoRHS
+.. option:: AbsurdPatternRequiresAbsentRHS
 
      RHS given despite an absurd pattern in the LHS.
 
@@ -1313,6 +1325,10 @@ The list containing any warning ``NAME`` can be produced by ``agda --help=warnin
 
      Empty ``mutual`` blocks.
 
+.. option:: EmptyPolarityPragma
+
+     :ref:`POLARITY pragmas <polarity-pragma>` not giving any polarities.
+
 .. option:: EmptyPostulate
 
      Empty ``postulate`` blocks.
@@ -1340,6 +1356,10 @@ The list containing any warning ``NAME`` can be produced by ``agda --help=warnin
 .. option:: FaceConstraintCannotBeNamed
 
      Face constraint patterns that are given as named arguments.
+
+.. option:: FixingRelevance
+
+     Invalid relevance annotations, automatically corrected.
 
 .. option:: FixityInRenamingModule
 
@@ -1383,10 +1403,6 @@ The list containing any warning ``NAME`` can be produced by ``agda --help=warnin
 .. option:: InvalidCharacterLiteral
 
      Illegal character literals such as surrogate code points.
-
-.. option:: InvalidConstructor
-
-     ``constructor`` blocks that contain declarations other type signatures for constructors.
 
 .. option:: InvalidConstructorBlock
 
@@ -1443,6 +1459,10 @@ The list containing any warning ``NAME`` can be produced by ``agda --help=warnin
 
      Declarations that should not be inside ``opaque`` blocks.
 
+.. option:: NotARewriteRule
+
+     ``REWRITE`` pragmas referring to identifiers that are neither definitions nor constructors.
+
 .. option:: NotInScope
 
      Out of scope names.
@@ -1487,17 +1507,109 @@ The list containing any warning ``NAME`` can be produced by ``agda --help=warnin
 
      :ref:`COMPILE<foreign-function-interface>` pragma for GHC backend targeting ``MAYBE``.
 
+.. option:: PragmaCompileUnparsable
+
+     Unparsable :ref:`COMPILE<foreign-function-interface>` GHC pragmas.
+
+.. option:: PragmaCompileWrong
+
+     Ill-formed :ref:`COMPILE<foreign-function-interface>` GHC pragmas.
+
+.. option:: PragmaCompileWrongName
+
+     :ref:`COMPILE<foreign-function-interface>` pragmas referring to identifiers that are neither definitions nor constructors.
+
+.. option:: PragmaExpectsDefinedSymbol
+
+     Pragmas referring to identifiers that are not defined symbols.
+
+.. option:: PragmaExpectsUnambiguousConstructorOrFunction
+
+     Pragmas referring to identifiers that are not unambiguous constructors or functions.
+
+.. option:: PragmaExpectsUnambiguousProjectionOrFunction
+
+     Pragmas referring to identifiers that are not unambiguous projections or functions.
+
 .. option:: PragmaNoTerminationCheck
 
      :ref:`NO_TERMINATION_CHECK<terminating-pragma>` pragmas; such are deprecated.
+
+.. option:: InvalidDisplayForm
+
+     An illegal :ref:`DISPLAY <display-pragma>` form; it will be ignored.
+
+.. option:: RewriteLHSNotDefinitionOrConstructor
+
+     Rewrite rule head symbol is not a defined symbol or constructor.
+
+.. option:: RewriteVariablesNotBoundByLHS
+
+     Rewrite rule does not bind all of its variables.
+
+.. option:: RewriteVariablesBoundMoreThanOnce
+
+     Constructor-headed rewrite rule has non-linear parameters.
+
+.. option:: RewriteLHSReduces
+
+     Rewrite rule LHS is not in weak-head normal form.
+
+.. option:: RewriteHeadSymbolIsProjectionLikeFunction
+
+     Rewrite rule head symbol is a projection-like function.
+
+.. option:: RewriteHeadSymbolIsTypeConstructor
+
+     Rewrite rule head symbol is a type constructor.
+
+.. option:: RewriteHeadSymbolContainsMetas
+
+     Definition of rewrite rule head symbol contains unsolved metas.
+
+.. option:: RewriteConstructorParametersNotGeneral
+
+     Constructor-headed rewrite rule parameters are not fully general.
+
+.. option:: RewriteContainsUnsolvedMetaVariables
+
+     Rewrite rule contains unsolved metas.
+
+.. option:: RewriteBlockedOnProblems
+
+     Checking rewrite rule blocked by unsolved constraint.
+
+.. option:: RewriteRequiresDefinitions
+
+     Checking rewrite rule blocked by missing definition.
+
+.. option:: RewriteDoesNotTargetRewriteRelation
+
+     Rewrite rule does not target the rewrite relation.
+
+.. option:: RewriteBeforeFunctionDefinition
+
+     Rewrite rule is not yet defined.
+
+.. option:: RewriteBeforeMutualFunctionDefinition
+
+     Mutually declaration with the rewrite rule is not yet defined.
 
 .. option:: ShadowingInTelescope
 
      Repeated variable name in telescope.
 
+.. option:: TooManyArgumentsToSort
+
+     E.g. `Set` used with more than one argument.
+
 .. option:: TooManyFields
 
      Record expression with invalid field names.
+
+.. option:: UnfoldingWrongName
+
+     Names in an ``unfolding`` clause that are not unambiguous definitions.
 
 .. option:: UnfoldTransparentName
 
@@ -1527,6 +1639,10 @@ The list containing any warning ``NAME`` can be produced by ``agda --help=warnin
 .. option:: UnsupportedIndexedMatch
 
      Failures to compute full equivalence when splitting on indexed family.
+
+.. option:: UnusedVariablesInDisplayForm
+
+     :ref:`DISPLAY <display-pragma>` forms that bind variables they do not use.
 
 .. option:: UselessAbstract
 
@@ -1577,6 +1693,10 @@ The list containing any warning ``NAME`` can be produced by ``agda --help=warnin
      Problem encountered with option :option:`-W`,
      like an unknown warning or the attempt to switch off a non-benign warning.
 
+.. option:: WithClauseProjectionFixityMismatch
+
+     Projection fixity different in with-clause compared to its parent clause.
+
 .. option:: WithoutKFlagPrimEraseEquality
 
      ``primEraseEquality`` used with the without-K flags.
@@ -1615,9 +1735,9 @@ Such *error warnings* are always on, they cannot be toggled by :option:`-W`.
 
      Importing a file using e.g. :option:`--cubical` into one which does not.
 
-.. option:: MissingDeclarations
+.. option:: MissingDataDeclaration
 
-     Definitions not associated to a declaration.
+     Constructor definitions not associated to a data declaration.
 
 .. option:: MissingDefinitions
 
@@ -1715,6 +1835,24 @@ Such *error warnings* are always on, they cannot be toggled by :option:`-W`.
 
      Unsolved meta variables.
 
+.. option:: HiddenNotInArgumentPosition
+
+     Hidden arguments ``{ x }`` can only appear as arguments to
+     functions, not as expressions by themselves.
+
+.. option:: InstanceNotInArgumentPosition
+
+     Instance arguments ``⦃ x ⦄`` can only appear as arguments to
+     functions, not as expressions by themselves.
+
+.. option:: MacroInLetBindings
+
+     Macros can not be let-bound.
+
+.. option:: AbstractInLetBindings
+
+     Let bindings can not be made abstract.
+
 
 Command-line examples
 ---------------------
@@ -1748,20 +1886,14 @@ An *infective* option is an option that if used in one module, must be
 used in all modules that depend on this module. The following options
 are infective:
 
-* :option:`--allow-exec`
 * :option:`--cohesion`
-* :option:`--cumulativity`
 * :option:`--erased-matches`
 * :option:`--erasure`
-* :option:`--experimental-irrelevance`
 * :option:`--flat-split`
 * :option:`--guarded`
-* :option:`--injective-type-constructors`
-* :option:`--omega-in-omega`
 * :option:`--prop`
 * :option:`--rewriting`
 * :option:`--two-level`
-* :option:`--type-in-type`
 
 Furthermore :option:`--cubical` and :option:`--erased-cubical` are
 *jointly infective*: if one of them is used in one module, then one or

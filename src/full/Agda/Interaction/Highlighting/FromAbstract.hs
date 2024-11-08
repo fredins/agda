@@ -196,6 +196,11 @@ instance (Hilite a, Hilite b) => Hilite (a, b) where
 instance Hilite A.RecordDirectives where
   hilite (RecordDirectives _ _ _ c) = hilite c
 
+instance Hilite A.RecordConName where
+  hilite = \case
+    A.NamedRecCon x -> hilite x
+    A.FreshRecCon{} -> mempty
+
 instance Hilite A.Declaration where
   hilite = \case
       A.Axiom _ax _di ai _occ x e            -> hl ai <> hl x <> hl e
@@ -290,7 +295,6 @@ instance (Hilite a, IsProjP a) => Hilite (A.Pattern' a) where
       A.RecP _r ps           -> hl ps
       A.EqualP _r ps         -> hl ps
       A.WithP _ p            -> hl p
-      A.AnnP _r a p          -> hl p
 
     where
     hl a = hilite a
@@ -356,6 +360,7 @@ instance Hilite A.ModuleApplication where
 instance Hilite A.LetBinding where
   hilite = \case
       A.LetBind    _r ai x t e     -> hl ai <> hl x <> hl t <> hl e
+      A.LetAxiom   _r ai x t       -> hl ai <> hl x <> hl t
       A.LetPatBind _r p e          -> hl p  <> hl e
       A.LetApply mi er x es _c dir -> hl mi <> hl er <> hl x <>
                                       hl es <> hl dir
@@ -378,7 +383,7 @@ instance Hilite A.LamBinding where
     A.DomainFull bind      -> hilite bind
 
 instance Hilite a => Hilite (A.Binder' a) where
-  hilite (A.Binder p x) = hilite p <> hilite x
+  hilite (A.Binder p _ x) = hilite p <> hilite x
 
 instance Hilite A.BindName where
   hilite (A.BindName x) = hiliteBound x

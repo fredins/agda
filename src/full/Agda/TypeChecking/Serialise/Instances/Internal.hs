@@ -212,8 +212,8 @@ instance EmbPrj DisplayTerm where
     valu _            = malformed
 
 instance EmbPrj MutualId where
-  icod_ (MutId a) = icode a
-  value n         = MutId <$!> value n
+  icod_ (MutualId a) = icode a
+  value n            = MutualId <$!> value n
 
 instance EmbPrj CompKit where
   icod_ (CompKit a b) = icodeN' CompKit a b
@@ -224,8 +224,8 @@ instance EmbPrj InstanceInfo where
   value = valueN InstanceInfo
 
 instance EmbPrj Definition where
-  icod_ (Defn a b c d e f g h i j k l m n o p blocked r s) =
-    icodeN' Defn a b (P.killRange c) d e f g h i j k l m n o p (ossify blocked) r s
+  icod_ (Defn a b c d e f g h i j k l m n o blocked r s) =
+    icodeN' Defn a b (P.killRange c) d e f g h i j k l m n o (ossify blocked) r s
     where
       -- Andreas, 2024-01-02, issue #7044:
       -- After serialization, a definition can never be unblocked,
@@ -428,8 +428,10 @@ instance EmbPrj Defn where
   icod_ (Primitive   a b c d e f)                       = icodeN 5 Primitive a b c d e f
   icod_ (PrimitiveSort a b)                             = icodeN 6 PrimitiveSort a b
   icod_ AbstractDefn{}                                  = __IMPOSSIBLE__
-  icod_ GeneralizableVar                                = icodeN 7 GeneralizableVar
-  icod_ DataOrRecSig{}                                  = __IMPOSSIBLE__
+  icod_ (GeneralizableVar a)                            = icodeN 7 GeneralizableVar a
+  icod_ (DataOrRecSig a)                                = icodeN 8 DataOrRecSig a
+    -- Andreas, 2024-10-27
+    -- DataOrRecSig is possible via unquoteDecl in meta-programming, see #7576
 
   value = vcase valu where
     valu [0, a]                                        = valuN Axiom a
@@ -440,7 +442,8 @@ instance EmbPrj Defn where
     valu [4, a, b, c, d, e, f, g, h, i, j, k]          = valuN Constructor a b c d e f g h i j k
     valu [5, a, b, c, d, e, f]                         = valuN Primitive   a b c d e f
     valu [6, a, b]                                     = valuN PrimitiveSort a b
-    valu [7]                                           = valuN GeneralizableVar
+    valu [7, a]                                        = valuN GeneralizableVar a
+    valu [8, a]                                        = valuN DataOrRecSig a
     valu _                                             = malformed
 
 instance EmbPrj LazySplit where
@@ -534,7 +537,7 @@ instance EmbPrj TermHead where
     valu _      = malformed
 
 instance EmbPrj I.Clause where
-  icod_ (Clause a b c d e f g h i j k l) = icodeN' Clause a b c d e f g h i j k l
+  icod_ (Clause a b c d e f g h i j k) = icodeN' Clause a b c d e f g h i j k
 
   value = valueN Clause
 

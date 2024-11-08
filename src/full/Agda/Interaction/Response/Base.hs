@@ -16,6 +16,10 @@ module Agda.Interaction.Response.Base
   , GiveResult (..)
   ) where
 
+import Control.Monad.Trans ( MonadIO(liftIO) )
+import Data.Set (Set)
+import Data.Word (Word32)
+
 import Agda.Interaction.Base
   ( CommandState
   , CompilerBackend
@@ -32,14 +36,10 @@ import Agda.Syntax.Concrete       (Expr)
 import Agda.Syntax.Concrete.Name  (Name, QName, NameInScope)
 import Agda.Syntax.Scope.Base     (WhyInScopeData)
 import qualified Agda.Syntax.Internal as I
-import {-# SOURCE #-} Agda.TypeChecking.Monad.Base
+import Agda.TypeChecking.Monad.Base.Types
   (HighlightingMethod, ModuleToSource, NamedMeta, IPFace')
 import Agda.Utils.Impossible
 import Agda.Utils.Time
-
-import Control.Monad.Trans ( MonadIO(liftIO) )
-import Data.Int
-import System.IO
 
 -- | Responses for any interactive interface
 --
@@ -53,7 +53,7 @@ data Response_boot tcErr tcWarning warningsAndNonFatalErrors
         HighlightingMethod
         ModuleToSource
     | Resp_Status Status
-    | Resp_JumpToError FilePath Int32
+    | Resp_JumpToError FilePath Word32
     | Resp_InteractionPoints [InteractionId]
     | Resp_GiveAction InteractionId GiveResult
     | Resp_MakeCase InteractionId MakeCaseVariant [String]
@@ -131,7 +131,7 @@ type Goals_boot tcErr =
 --   used, if appropriate.
 data Info_Error_boot tcErr tcWarning
     = Info_GenericError tcErr
-    | Info_CompilationError [tcWarning]
+    | Info_CompilationError (Set tcWarning)
     | Info_HighlightingParseError InteractionId
     | Info_HighlightingScopeCheckError InteractionId
 

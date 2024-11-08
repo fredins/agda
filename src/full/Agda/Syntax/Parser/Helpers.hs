@@ -5,17 +5,15 @@ module Agda.Syntax.Parser.Helpers where
 import Prelude hiding (null)
 
 import Control.Applicative ( (<|>) )
-import Control.Monad
-import Control.Monad.State
+import Control.Monad.State ( modify' )
 
 import Data.Bifunctor (first, second)
 import Data.Char
-import Data.DList (DList)
-import qualified Data.DList as DL
 import qualified Data.List as List
 import Data.Maybe
 import Data.Semigroup ((<>), sconcat)
-import qualified Data.Traversable as T
+import Data.Text (Text)
+import qualified Data.Text as T
 
 import Agda.Syntax.Position
 import Agda.Syntax.Parser.Monad
@@ -33,7 +31,7 @@ import Agda.TypeChecking.Positivity.Occurrence
 import Agda.Utils.Either
 import Agda.Utils.Functor
 import Agda.Utils.Hash
-import Agda.Utils.List ( spanJust, chopWhen )
+import Agda.Utils.List ( spanJust, chopWhen, initLast )
 import Agda.Utils.List1 ( List1, pattern (:|), (<|) )
 import Agda.Utils.Monad
 import Agda.Utils.Null
@@ -89,23 +87,37 @@ figureOutTopLevelModule ds =
       -- We use the beginning of the file as beginning of the top level module.
       r = beginningOfFile $ getRange ds1
 
--- | Create a name from a string.
+-- | Create a name from a string. The boolean indicates whether a part
+-- of the name can be token 'constructor'.
+mkName' :: Bool -> (Interval, String) -> Parser Name
+mkName' constructor' (i, s) = do
+    let
+      xs = C.stringNameParts s
 
-mkName :: (Interval, String) -> Parser Name
-mkName (i, s) = do
-    let xs = C.stringNameParts s
-    mapM_ isValidId xs
+      -- The keyword constructor can appear as the only NamePart in the
+      -- last segment of a qualified name --- Foo.constructor refers to
+      -- the constructor of the record Foo.
+      constructor = case xs of
+        _ :| [] -> constructor'
+        _       -> False
+      --  The constructor' argument to mkName' determines whether this
+      --  is the last segment of a QName, the local variable constructor
+      --  additionally takes whether it's the only NamePart into
+      --  consideration.
+
+    mapM_ (isValidId constructor) xs
     unless (alternating xs) $ parseError $ "a name cannot contain two consecutive underscores"
     return $ Name (getRange i) InScope xs
     where
-        isValidId Hole   = return ()
-        isValidId (Id y) = do
+        isValidId _ Hole   = return ()
+        isValidId con (Id y) = do
           let x = rawNameToString y
               err = "in the name " ++ s ++ ", the part " ++ x ++ " is not valid"
           case parse defaultParseFlags [0] (lexer return) x of
             ParseOk _ TokId{}  -> return ()
             ParseFailed{}      -> parseError err
             ParseOk _ TokEOF{} -> parseError err
+            ParseOk _ (TokKeyword KwConstructor _) | con -> pure ()
             ParseOk _ t   -> parseError . ((err ++ " because it is ") ++) $ case t of
               TokQId{}      -> __IMPOSSIBLE__ -- "qualified"
               TokKeyword{}  -> "a keyword"
@@ -149,17 +161,26 @@ mkName (i, s) = do
         alternating (_    :| x   : xs) = alternating $ x :| xs
         alternating (_    :|       []) = True
 
+-- | Create a name from a string
+mkName :: (Interval, String) -> Parser Name
+mkName = mkName' False
+
 -- | Create a qualified name from a list of strings
 mkQName :: [(Interval, String)] -> Parser QName
-mkQName ss = do
-    xs <- mapM mkName ss
-    return $ foldr Qual (QName $ last xs) (init xs)
+mkQName ss | Just (ss0, ss1) <- initLast ss = do
+  xs0 <- mapM mkName ss0
+  xs1 <- mkName' True ss1
+  return $ foldr Qual (QName xs1) xs0
+mkQName _ = __IMPOSSIBLE__ -- The lexer never gives us an empty list of parts
 
 mkDomainFree_ :: (NamedArg Binder -> NamedArg Binder) -> Maybe Pattern -> Name -> NamedArg Binder
-mkDomainFree_ f p n = f $ defaultNamedArg $ Binder p $ mkBoundName_ n
+mkDomainFree_ f p n = f $ defaultNamedArg $ Binder p UserBinderName $ mkBoundName_ n
 
 mkRString :: (Interval, String) -> RString
 mkRString (i, s) = Ranged (getRange i) s
+
+mkRText :: (Interval, String) -> Ranged Text
+mkRText (i, s) = Ranged (getRange i) $ T.pack s
 
 -- | Create a qualified name from a string (used in pragmas).
 --   Range of each name component is range of whole string.
@@ -340,7 +361,7 @@ boundNamesOrAbsurd es
         Nothing   -> parseError $ "expected sequence of bound identifiers"
         Just good -> fmap Left $ forM good $ \ (n, me) -> do
                        p <- traverse exprToPattern me
-                       return (defaultNamedArg (Binder p (mkBoundName_ n)))
+                       return (defaultNamedArg (Binder p UserBinderName (mkBoundName_ n)))
 
   where
 
@@ -480,24 +501,24 @@ patternSynArgs = mapM \ x -> do
   case x of
 
     -- Invariant: fixity is not used here, and neither finiteness
-    Arg ai (Named mn (Binder mp (BName n fix mtac fin)))
+    Arg ai (Named mn (Binder mp _ (BName n fix mtac fin)))
       | not $ null fix -> __IMPOSSIBLE__
       | fin            -> __IMPOSSIBLE__
 
     -- Error cases:
-    Arg _ (Named _ (Binder (Just _) _)) ->
+    Arg _ (Named _ (Binder (Just _) _ _)) ->
       abort "Arguments to pattern synonyms cannot be patterns themselves"
-    Arg _ (Named _ (Binder _ (BName _ _ tac _))) | not (null tac) ->
+    Arg _ (Named _ (Binder _ _ (BName _ _ tac _))) | not (null tac) ->
       abort $ noAnn "Tactic"
 
     -- Benign case:
-    Arg ai (Named mn (Binder Nothing (BName n _ _ _)))
+    Arg ai (Named mn (Binder Nothing _ (BName n _ _ _)))
       -- allow {n = n} for backwards compat with Agda 2.6
       | maybe True ((C.nameToRawName n ==) . rangedThing . woThing) mn ->
         case ai of
 
           -- Benign case:
-          ArgInfo h (Modality Relevant (Quantityω _) Continuous) UserWritten UnknownFVs (Annotation IsNotLock) ->
+          ArgInfo h (Modality Relevant{} (Quantityω _) Continuous) UserWritten UnknownFVs (Annotation IsNotLock) ->
             return $ WithHiding h n
 
           -- Error cases:
@@ -542,11 +563,11 @@ data RHSOrTypeSigs
 
 patternToNames :: Pattern -> Parser (List1 (ArgInfo, Name))
 patternToNames = \case
-    IdentP _ (QName i)       -> return $ singleton $ (defaultArgInfo, i)
-    WildP r                  -> return $ singleton $ (defaultArgInfo, C.noName r)
-    DotP _ (Ident (QName i)) -> return $ singleton $ (setRelevance Irrelevant defaultArgInfo, i)
-    RawAppP _ ps             -> sconcat . List2.toList1 <$> mapM patternToNames ps
-    p                        -> parseError $
+    IdentP _ (QName i)           -> return $ singleton (defaultArgInfo, i)
+    WildP r                      -> return $ singleton (defaultArgInfo, C.noName r)
+    DotP kwr _ (Ident (QName i)) -> return $ singleton (makeIrrelevant kwr defaultArgInfo, i)
+    RawAppP _ ps                 -> sconcat . List2.toList1 <$> mapM patternToNames ps
+    p -> parseError $
       "Illegal name in type signature: " ++ prettyShow p
 
 funClauseOrTypeSigs :: [Attr] -> ([RewriteEqn] -> [WithExpr] -> LHS)
@@ -574,6 +595,21 @@ funClauseOrTypeSigs attrs lhs' with mrhs wh = do
 
 typeSig :: ArgInfo -> TacticAttribute -> Name -> Expr -> Declaration
 typeSig i tac n e = TypeSig i tac n (Generalized e)
+
+------------------------------------------------------------------------
+-- * Relevance
+
+makeIrrelevant :: (HasRange a, LensRelevance b) => a -> b -> b
+makeIrrelevant = setRelevance . Irrelevant . OIrrDot . getRange
+
+makeShapeIrrelevant :: (HasRange a, LensRelevance b) => a -> b -> b
+makeShapeIrrelevant = setRelevance . ShapeIrrelevant . OShIrrDotDot . getRange
+
+defaultIrrelevantArg :: HasRange a => a -> b -> Arg b
+defaultIrrelevantArg a = makeIrrelevant a . defaultArg
+
+defaultShapeIrrelevantArg :: HasRange a => a -> b -> Arg b
+defaultShapeIrrelevantArg a = makeShapeIrrelevant a . defaultArg
 
 ------------------------------------------------------------------------
 -- * Attributes

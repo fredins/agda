@@ -87,14 +87,8 @@ ifeq ($(GHC_RTS_OPTS),)
 #
 ifeq ("$(shell $(GHC) --info | grep 'target word size' | cut -d\" -f4)","4")
 GHC_RTS_OPTS := -M2.3G
-else ifeq ($(GHC_VERSION),9.6)
-GHC_RTS_OPTS := -M6G
-else ifeq ($(GHC_VERSION),9.0)
-GHC_RTS_OPTS := -M6G
-else ifeq ($(GHC_VERSION),8.10)
-GHC_RTS_OPTS := -M6G
 else
-GHC_RTS_OPTS := -M4G
+GHC_RTS_OPTS := -M6G
 endif
 #
 endif
@@ -122,15 +116,10 @@ STACK_INSTALL_DEP_OPTS = --only-dependencies $(STACK_INSTALL_OPTS)
 
 # Options for building the Agda exectutable.
 # -j1 so that cabal will print built progress to stdout.
-CABAL_INSTALL_BIN_OPTS = -j1 --disable-library-profiling -fdebug \
-                         $(CABAL_INSTALL_OPTS)
-CABAL_INSTALL_BIN_OPTS_NODEBUG = -j1 --disable-library-profiling \
-                               $(CABAL_INSTALL_OPTS)
-STACK_INSTALL_BIN_OPTS = --no-library-profiling \
-												 --flag Agda:debug \
-                         $(STACK_INSTALL_OPTS)
-STACK_INSTALL_BIN_OPTS_NODEBUG = --no-library-profiling \
-																 $(STACK_INSTALL_OPTS)
+CABAL_INSTALL_BIN_OPTS         = -fdebug $(CABAL_INSTALL_BIN_OPTS_NODEBUG)
+CABAL_INSTALL_BIN_OPTS_NODEBUG = -j1 --disable-library-profiling $(CABAL_INSTALL_OPTS)
+STACK_INSTALL_BIN_OPTS         = --flag Agda:debug $(STACK_INSTALL_BIN_OPTS_NODEBUG)
+STACK_INSTALL_BIN_OPTS_NODEBUG = --no-library-profiling $(STACK_INSTALL_OPTS)
 
 CABAL_CONFIGURE_OPTS = $(SLOW_CABAL_INSTALL_OPTS) \
                        --disable-library-profiling \
@@ -429,6 +418,7 @@ workflows :
 .PHONY : test ## Run all test suites.
 test : check-whitespace \
        check-encoding \
+       check-mdo \
        common \
        succeed \
        fail \
@@ -470,6 +460,11 @@ check-encoding :
 #
 # to find non-ASCII characters.
 
+.PHONY : check-mdo ## Make sure we don't use LANGUAGE RecursiveDo. [Issue #7303]
+check-mdo :
+	@$(call decorate, "Check that RecursiveDo language extension is not used", \
+          test/check-mdo.sh)
+
 .PHONY : bugs ##
 bugs :
 	@$(call decorate, "Suite of tests for bugs", \
@@ -501,7 +496,7 @@ succeed :
 fast-succeed :
 	@$(call decorate, "Suite of successful tests (using agda-fast)", \
 		echo $(shell which $(AGDA_FAST_BIN)) > test/Succeed/exec-tc/executables && \
-		AGDA_FAST_BIN=$(AGDA_FAST_BIN) $(AGDA_FAST_TESTS_BIN) $(AGDA_TESTS_OPTIONS) --regex-include all/Succeed ; \
+		AGDA_BIN=$(AGDA_FAST_BIN) $(AGDA_FAST_TESTS_BIN) $(AGDA_TESTS_OPTIONS) --regex-include all/Succeed ; \
 		rm test/Succeed/exec-tc/executables )
 
 .PHONY : fail ##
@@ -632,23 +627,33 @@ benchmark-summary :
 	@$(call decorate, "Benchmark summary", \
 	  $(MAKE) -C benchmark summary)
 
-.PHONY : user-manual-test ##
+.PHONY : user-manual-test ## Check the Agda code embedded in the user manual.
 user-manual-test :
 	@$(call decorate, "User manual (test)", \
 		find doc/user-manual -type f -name '*.agdai' -delete; \
 		AGDA_BIN=$(AGDA_BIN) $(AGDA_TESTS_BIN) $(AGDA_TESTS_OPTIONS) --regex-include all/UserManual)
 
-.PHONY : user-manual-covers-options
+.PHONY : user-manual-covers-options ## Test that the user manual mentions all options.
 user-manual-covers-options :
 	@$(call decorate, "User manual should mention all options", \
           AGDA_BIN=$(AGDA_BIN) test/doc/user-manual-covers-options.sh)
 
-.PHONY : user-manual-covers-warnings
+.PHONY : user-manual-covers-warnings ## Test that the user manual mentions all warnings.
 user-manual-covers-warnings :
 	@$(call decorate, "User manual should mention all warnings", \
           AGDA_BIN=$(AGDA_BIN) test/doc/user-manual-covers-warnings.sh)
 
-.PHONY : testing-emacs-mode ##
+.PHONY : test-suite-covers-warnings ## Check whether the test suite covers all warnings.
+test-suite-covers-warnings :
+	@$(call decorate, "Test suite should cover all warnings", \
+          AGDA_BIN=$(AGDA_BIN) test/test-suite-covers-warnings.sh)
+
+.PHONY : test-suite-covers-errors ## Check whether the test suite covers all errors.
+test-suite-covers-errors :
+	@$(call decorate, "Test suite should cover all errors", \
+          AGDA_BIN=$(AGDA_BIN) test/test-suite-covers-errors.sh)
+
+.PHONY : testing-emacs-mode ## Compile the emacs mode and run basic tests.
 testing-emacs-mode:
 	@$(call decorate, "Testing the Emacs mode", \
 	  $(AGDA_MODE) compile)
@@ -676,7 +681,7 @@ run-doctest:
 .PHONY : install-size-solver ## Install the size solver.
 install-size-solver :
 	@$(call decorate, "Installing the size-solver program", \
-		$(MAKE) -C src/size-solver STACK_INSTALL_OPTS='$(SLOW_STACK_INSTALL_OPTS) $(STACK_INSTALL_OPTS)' CABAL_INSTALL_OPTS='$(SLOW_CABAL_INSTALL_OPTS) $(CABAL_INSTALL_OPTS)' install-bin)
+		$(MAKE) -C src/size-solver STACK_INSTALL_OPTS='$(SLOW_STACK_INSTALL_OPTS) $(STACK_INSTALL_BIN_OPTS)' CABAL_INSTALL_OPTS='$(SLOW_CABAL_INSTALL_OPTS) $(CABAL_INSTALL_OPTS)' install-bin)
 
 .PHONY : size-solver-test ##
 size-solver-test : install-size-solver

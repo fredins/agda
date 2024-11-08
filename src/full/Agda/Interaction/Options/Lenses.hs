@@ -10,44 +10,25 @@ module Agda.Interaction.Options.Lenses where
 
 import Control.Monad.IO.Class   ( MonadIO(..) )
 
+import qualified Data.List as List
 import Data.Set (Set)
 import qualified Data.Set as Set
 
-import System.FilePath ((</>))
+import System.FilePath ((</>), joinPath, splitDirectories)
 
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.State
 import Agda.Interaction.Library (getPrimitiveLibDir)
 import Agda.Interaction.Options
 
-import Agda.Utils.Lens
+import Agda.Utils.Lens        ()
 import Agda.Utils.FileName
+import Agda.Utils.Functor     ( (<.>) )
 import Agda.Utils.WithDefault (pattern Value)
 
 ---------------------------------------------------------------------------
 -- * Pragma options
 ---------------------------------------------------------------------------
-
-class LensPragmaOptions a where
-  getPragmaOptions  :: a -> PragmaOptions
-  setPragmaOptions  :: PragmaOptions -> a -> a
-  mapPragmaOptions  :: (PragmaOptions -> PragmaOptions) -> a -> a
-  lensPragmaOptions :: Lens' a PragmaOptions
-  -- lensPragmaOptions :: forall f. Functor f => (PragmaOptions -> f PragmaOptions) -> a -> f a
-
-  -- default implementations
-  setPragmaOptions     = mapPragmaOptions . const
-  mapPragmaOptions f a = setPragmaOptions (f $ getPragmaOptions a) a
-
-instance LensPragmaOptions CommandLineOptions where
-  getPragmaOptions = optPragmaOptions
-  setPragmaOptions opts st = st { optPragmaOptions = opts }
-  lensPragmaOptions f st = f (optPragmaOptions st) <&> \ opts -> st { optPragmaOptions = opts }
-
-instance LensPragmaOptions TCState where
-  getPragmaOptions = (^. stPragmaOptions)
-  setPragmaOptions = set stPragmaOptions
-  lensPragmaOptions = stPragmaOptions
 
 modifyPragmaOptions :: MonadTCState m => (PragmaOptions -> PragmaOptions) -> m ()
 modifyPragmaOptions = modifyTC . mapPragmaOptions
@@ -200,20 +181,28 @@ builtinModules = builtinModulesWithSafePostulates `Set.union`
                  builtinModulesWithUnsafePostulates
 
 isPrimitiveModule :: MonadIO m => FilePath -> m Bool
-isPrimitiveModule file = do
-  libdirPrim <- liftIO getPrimitiveLibDir
-  return (file `Set.member` Set.map (libdirPrim </>) primitiveModules)
+isPrimitiveModule = isPrimitiveModuleFrom primitiveModules
 
 isBuiltinModule :: MonadIO m => FilePath -> m Bool
-isBuiltinModule file = do
-  libdirPrim <- liftIO getPrimitiveLibDir
-  return (file `Set.member` Set.map (libdirPrim </>) builtinModules)
+isBuiltinModule = isPrimitiveModuleFrom builtinModules
 
 isBuiltinModuleWithSafePostulates :: MonadIO m => FilePath -> m Bool
-isBuiltinModuleWithSafePostulates file = do
-  libdirPrim <- liftIO getPrimitiveLibDir
-  let safeBuiltins   = Set.map (libdirPrim </>) builtinModulesWithSafePostulates
-  return (file `Set.member` safeBuiltins)
+isBuiltinModuleWithSafePostulates = isPrimitiveModuleFrom builtinModulesWithSafePostulates
+
+-- | Check whether a 'FilePath' is one of the primitive modules mentioned in @Set FilePath@.
+--
+isPrimitiveModuleFrom :: MonadIO m => Set FilePath -> FilePath -> m Bool
+isPrimitiveModuleFrom s = maybe False (`Set.member` s) <.> stripPrimitiveLibDir
+
+-- | Strip the 'getPrimitiveLibDir' off the given 'FilePath',
+--   returning the suffix if successful.
+--
+stripPrimitiveLibDir :: MonadIO m => FilePath -> m (Maybe FilePath)
+stripPrimitiveLibDir file = liftIO $ do
+  primPath <- splitDirectories <$> getPrimitiveLibDir
+  let filePath = splitDirectories file
+  return $ fmap joinPath $ List.stripPrefix primPath filePath
+
 
 ---------------------------------------------------------------------------
 -- ** Include directories

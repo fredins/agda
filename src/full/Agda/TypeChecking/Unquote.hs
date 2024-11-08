@@ -1,5 +1,7 @@
 module Agda.TypeChecking.Unquote where
 
+import Prelude hiding (null)
+
 import Control.Arrow          ( first, second, (&&&) )
 import Control.Monad          ( (<=<) )
 import Control.Monad.Except   ( MonadError(..), ExceptT(..), runExceptT )
@@ -20,20 +22,27 @@ import qualified Data.Text as T
 import Data.Word
 
 import System.Directory (doesFileExist, getPermissions, executable)
-import System.Process ( readProcessWithExitCode )
+import System.Process.Text ( readProcessWithExitCode )
 import System.Exit ( ExitCode(..) )
 
 import Agda.Syntax.Common hiding ( Nat )
+import Agda.Syntax.Common.Pretty (prettyShow)
 import Agda.Syntax.Internal as I
 import qualified Agda.Syntax.Reflected as R
 import qualified Agda.Syntax.Abstract as A
+import Agda.Syntax.Abstract (TypedBindingInfo(tbTacticAttr))
 import Agda.Syntax.Abstract.Views
 import Agda.Syntax.Translation.InternalToAbstract
+import Agda.Syntax.Translation.ConcreteToAbstract
 import Agda.Syntax.Literal
+import qualified Agda.Syntax.Concrete as C
+import Agda.Syntax.Concrete.Name (simpleName)
 import Agda.Syntax.Position
 import Agda.Syntax.Info as Info
 import Agda.Syntax.Translation.ReflectedToAbstract
-import Agda.Syntax.Scope.Base (KindOfName(ConName, DataName))
+import Agda.Syntax.Scope.Base (KindOfName(ConName, DataName)
+                              , scopeLocals, LocalVar(LocalVar), BindingSource(MacroBound) )
+import Agda.Syntax.Parser
 
 import Agda.Interaction.Library ( ExeName )
 import Agda.Interaction.Options ( optTrustedExecutables, optAllowExec )
@@ -53,22 +62,23 @@ import Agda.TypeChecking.Primitive
 import Agda.TypeChecking.ReconstructParameters
 import Agda.TypeChecking.CheckInternal
 import Agda.TypeChecking.InstanceArguments
+import Agda.TypeChecking.Warnings
 
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Term
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Def
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Decl
 import Agda.TypeChecking.Rules.Data
 
+import Agda.Utils.CallStack           ( HasCallStack )
 import Agda.Utils.Either
 import Agda.Utils.Lens
 import Agda.Utils.List1 (List1, pattern (:|))
 import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Monad
-import Agda.Syntax.Common.Pretty (prettyShow)
+import Agda.Utils.Null
 import qualified Agda.Interaction.Options.Lenses as Lens
 
 import Agda.Utils.Impossible
-import Agda.Syntax.Abstract (TypedBindingInfo(tbTacticAttr))
 
 agdaTermType :: TCM Type
 agdaTermType = El (mkType 0) <$> primAgdaTerm
@@ -106,13 +116,23 @@ runUnquoteM m = do
        $ unpackUnquoteM m cxt (Clean, s)
   case z of
     Left err              -> return $ Left err
-    Right ((x, _), decls) -> Right (x, decls) <$ mapM_ isDefined decls
+    Right ((v, _), decls) -> Right (v, decls) <$ mapM_ isDefined decls
   where
     isDefined x = do
-      def <- theDef <$> getConstInfo x
-      case def of
-        Function{funClauses = []} -> genericError $ "Missing definition for " ++ prettyShow x
-        _       -> return ()
+      getConstInfo x <&> theDef >>= \case
+        FunctionDefn FunctionData{ _funClauses = cl } -> when (null cl) $
+          unquoteError $ MissingDefinition x
+        -- Andreas, 2024-10-11:
+        -- some of the following cases might be __IMPOSSIBLE__
+        AxiomDefn         {} -> return ()
+        DataOrRecSigDefn  {} -> return ()
+        GeneralizableVar  {} -> return ()
+        AbstractDefn      {} -> return ()
+        DatatypeDefn      {} -> return ()
+        RecordDefn        {} -> return ()
+        ConstructorDefn   {} -> return ()
+        PrimitiveDefn     {} -> return ()
+        PrimitiveSortDefn {} -> return ()
 
 liftU1 :: (TCM (UnquoteRes a) -> TCM (UnquoteRes b)) -> UnquoteM a -> UnquoteM b
 liftU1 f m = packUnquoteM $ \ cxt s -> f (unpackUnquoteM m cxt s)
@@ -147,10 +167,12 @@ reduceQuotedTerm t = locallyReduceAllDefs $ do
 class Unquote a where
   unquote :: I.Term -> UnquoteM a
 
-unquoteN :: Unquote a => Arg Term -> UnquoteM a
-unquoteN a | visible a && isRelevant a =
-    unquote $ unArg a
-unquoteN a = throwError $ BadVisibility "visible" a
+-- | Unquote an @'Arg' 'Term'@ assuming the 'ArgInfo' does not contain information.
+-- (This means, it should be visible, relevant, etc., like 'defaultArg').
+unquoteN :: (HasCallStack, Unquote a) => Arg Term -> UnquoteM a
+unquoteN (Arg info v) =
+  if null info then unquote v else __IMPOSSIBLE__
+    -- because we have a CallStack, this also includes the caller
 
 choice :: Monad m => [(m Bool, m a)] -> m a -> m a
 choice [] dflt = dflt
@@ -378,8 +400,8 @@ instance Unquote Relevance where
     case t of
       Con c _ [] ->
         choice
-          [(c `isCon` getBuiltin' builtinRelevant,   return Relevant)
-          ,(c `isCon` getBuiltin' builtinIrrelevant, return Irrelevant)]
+          [(c `isCon` getBuiltin' builtinRelevant,   return relevant)
+          ,(c `isCon` getBuiltin' builtinIrrelevant, return irrelevant)]
           __IMPOSSIBLE__
       Con c _ vs -> __IMPOSSIBLE__
       _        -> throwError $ NonCanonical "relevance" t
@@ -432,16 +454,12 @@ instance Unquote Blocker where
 
 instance Unquote MetaId where
   unquote t = do
-    t <- reduceQuotedTerm t
-    case t of
-      Lit (LitMeta m x) -> liftTCM $ do
-        live <- (Just m ==) <$> currentTopLevelModule
-        unless live $
-            typeError . GenericDocError =<<
-              sep [ "Can't unquote stale metavariable"
-                  , pretty m <> "._" <> pretty (metaId x) ]
-        return x
-      _ -> throwError $ NonCanonical "meta variable" t
+    reduceQuotedTerm t >>= \case
+      Lit (LitMeta m x) -> x <$ do
+        -- We cannot unquote a meta from a different file.
+        unlessM ((Just m ==) <$> currentTopLevelModule) do
+          throwError $ StaleMeta m x
+      t -> throwError $ NonCanonical "meta variable" t
 
 instance Unquote a => Unquote (Dom a) where
   unquote t = domFromArg <$> unquote t
@@ -615,6 +633,7 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
              , (f `isDef` getBuiltin' builtinAgdaTCMDefineFun,  uqFun2 tcDefineFun  u v)
              , (f `isDef` getBuiltin' builtinAgdaTCMQuoteOmegaTerm, tcQuoteTerm (sort $ Inf UType 0) (unElim v))
              , (f `isDef` getBuiltin' builtinAgdaTCMPragmaForeign, tcFun2 tcPragmaForeign u v)
+             , (f `isDef` getBuiltin' builtinAgdaTCMCheckFromString, tcFun2 tcCheckFromString u v)
              ]
              failEval
     I.Def f [l, a, u] ->
@@ -717,7 +736,7 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
     tcFreshName :: Text -> TCM Term
     tcFreshName s = do
       whenM (viewTC eCurrentlyElaborating) $
-        typeError $ GenericError "Not supported: declaring new names from an edit-time macro"
+        typeError $ NotSupported "declaring new names from an edit-time macro"
       m <- currentModule
       quoteName . qualify m <$> freshName_ (T.unpack s)
 
@@ -737,8 +756,7 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
     tcCommit :: UnquoteM Term
     tcCommit = do
       dirty <- gets fst
-      when (dirty == Dirty) $
-        liftTCM $ typeError $ GenericError "Cannot use commitTC after declaring new definitions."
+      when (dirty == Dirty) $ throwError CommitAfterDef
       s <- getTC
       modify (second $ const s)
       liftTCM primUnitUnit
@@ -785,6 +803,23 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
         locallyReconstructed (quoteTerm v)
       else
         quoteTerm =<< process v
+
+
+    tcCheckFromString :: Text -> R.Type -> TCM Term
+    tcCheckFromString str a = do
+      (C.ExprWhere c wh , _) <- runPM $ parsePosString exprWhereParser (startPos Nothing) (T.unpack str)
+      r <- isReconstructed
+      e <- concreteToAbstract_ c
+      a <- workOnTypes $ locallyReduceAllDefs $ isType_ =<< toAbstract_ a
+
+      v <- checkExpr e a
+      if r then do
+        v <- process v
+        v <- locallyReduceAllDefs $ reconstructParameters a v
+        locallyReconstructed (quoteTerm v)
+      else
+        quoteTerm =<< process v
+
 
     tcQuoteTerm :: Type -> Term -> UnquoteM Term
     tcQuoteTerm a v = liftTCM $ do
@@ -851,9 +886,11 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
         quoteDomWithName (x, t) = toTerm <*> pure (T.pack x, t)
 
     extendCxt :: Text -> Arg R.Type -> UnquoteM a -> UnquoteM a
-    extendCxt s a m = do
+    extendCxt s' a m = withFreshName noRange (T.unpack s') $ \s -> do
       a <- workOnTypes $ locallyReduceAllDefs $ liftTCM $ traverse (isType_ <=< toAbstract_) a
-      liftU1 (addContext (s, domFromArg a :: Dom Type)) m
+
+      locallyScope scopeLocals ((simpleName (T.unpack s') , LocalVar s MacroBound []) :)
+          $ liftU1 (addContext (s, domFromArg a :: Dom Type)) m
 
     tcExtendContext :: Term -> Term -> Term -> UnquoteM Term
     tcExtendContext s a m = do
@@ -879,7 +916,7 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
 
     constInfo :: QName -> TCM Definition
     constInfo x = either err return =<< getConstInfo' x
-      where err _ = genericError $ "Unbound name: " ++ prettyShow x
+      where err _ = unquoteError $ UnboundName x
 
     tcGetType :: QName -> TCM Term
     tcGetType x = do
@@ -948,44 +985,33 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
     setDirty :: UnquoteM ()
     setDirty = modify (first $ const Dirty)
 
-    tcDeclareDef :: Arg QName -> R.Type -> UnquoteM Term
-    tcDeclareDef (Arg i x) a = inOriginalContext $ do
+    tcDeclareDef_ :: Arg QName -> R.Type -> String -> Defn -> UnquoteM Term
+    tcDeclareDef_ (Arg i x) a doc defn = inOriginalContext $ do
       setDirty
-      when (hidden i) $ liftTCM $ typeError . GenericDocError =<<
-        "Cannot declare hidden function" <+> prettyTCM x
+      when (hidden i) $ liftTCM $ unquoteError $ CannotDeclareHiddenFunction x
       tell [x]
       liftTCM $ do
         alwaysReportSDoc "tc.unquote.decl" 10 $ sep
-          [ "declare" <+> prettyTCM x <+> ":"
+          [ "declare" <+> text doc <+> prettyTCM x <+> ":"
           , nest 2 $ prettyR a
           ]
         a <- locallyReduceAllDefs $ isType_ =<< toAbstract_ a
-        alreadyDefined <- isRight <$> getConstInfo' x
-        when alreadyDefined $ genericError $ "Multiple declarations of " ++ prettyShow x
-        addConstant' x i x a =<< emptyFunction
+        getConstInfo' x >>= \case
+          Left _    -> pure ()
+          Right def -> typeError $ ClashingDefinition (qnameToConcrete x) (defName def) Nothing
+        addConstant' x i a defn
         when (isInstance i) $ addTypedInstance x a
         primUnitUnit
 
+    tcDeclareDef :: Arg QName -> R.Type -> UnquoteM Term
+    tcDeclareDef arg a = tcDeclareDef_ arg a "" =<< emptyFunction
+
     tcDeclarePostulate :: Arg QName -> R.Type -> UnquoteM Term
-    tcDeclarePostulate (Arg i x) a = inOriginalContext $ do
+    tcDeclarePostulate arg@(Arg i x) a = do
       clo <- commandLineOptions
       when (Lens.getSafeMode clo) $ liftTCM $ typeError . GenericDocError =<<
         "Cannot postulate '" <+> prettyTCM x <+> ":" <+> prettyR a <+> "' with safe flag"
-      setDirty
-      when (hidden i) $ liftTCM $ typeError . GenericDocError =<<
-        "Cannot declare hidden function" <+> prettyTCM x
-      tell [x]
-      liftTCM $ do
-        alwaysReportSDoc "tc.unquote.decl" 10 $ sep
-          [ "declare Postulate" <+> prettyTCM x <+> ":"
-          , nest 2 $ prettyR a
-          ]
-        a <- locallyReduceAllDefs $ isType_ =<< toAbstract_ a
-        alreadyDefined <- isRight <$> getConstInfo' x
-        when alreadyDefined $ genericError $ "Multiple declarations of " ++ prettyShow x
-        addConstant' x i x a defaultAxiom
-        when (isInstance i) $ addTypedInstance x a
-        primUnitUnit
+      tcDeclareDef_ arg a "Postulate" defaultAxiom
 
     -- A datatype is expected to be declared with a function type.
     -- The second argument indicates how many preceding types are parameters.
@@ -993,35 +1019,33 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
     tcDeclareData x npars t = inOriginalContext $ do
       setDirty
       tell [x]
-      liftTCM $ do
-        alwaysReportSDoc "tc.unquote.decl" 10 $ sep
-          [ "declare Data" <+> prettyTCM x <+> ":"
-          , nest 2 $ prettyR t
-          ]
-        alreadyDefined <- isRight <$> getConstInfo' x
-        when alreadyDefined $ genericError $ "Multiple declarations of " ++ prettyShow x
-        e <- toAbstract_ t
-        -- The type to be checked with @checkSig@ is without parameters.
-        let (tel, e') = splitPars (fromInteger npars) e
-        ac <- asksTC (^. lensIsAbstract)
-        let defIn = mkDefInfo (nameConcrete $ qnameName x) noFixity' PublicAccess ac noRange
-        checkSig DataName defIn defaultErased x
-          (A.GeneralizeTel Map.empty tel) e'
-        primUnitUnit
+      alwaysReportSDoc "tc.unquote.decl" 10 $ sep
+        [ "declare Data" <+> prettyTCM x <+> ":"
+        , nest 2 $ prettyR t
+        ]
+      getConstInfo' x >>= \case
+        Left _    -> pure ()
+        Right def -> liftTCM $ typeError $ ClashingDefinition (qnameToConcrete x) (defName def) Nothing
+      e <- liftTCM $ toAbstract_ t
+      -- The type to be checked with @checkSig@ is without parameters.
+      (tel, e') <- splitPars (fromInteger npars) e
+      ac <- asksTC (^. lensIsAbstract)
+      let defIn = mkDefInfo (nameConcrete $ qnameName x) noFixity' PublicAccess ac noRange
+      liftTCM $ checkSig DataName defIn defaultErased x (A.GeneralizeTel Map.empty tel) e'
+      liftTCM primUnitUnit
 
-    tcDefineData :: QName -> [(QName, R.Type)] -> UnquoteM Term
-    tcDefineData x cs = inOriginalContext $ (setDirty >>) $ liftTCM $ do
-      caseEitherM (getConstInfo' x)
-        (const $ genericError $ "Missing declaration for " ++ prettyShow x) $ \def -> do
+    tcDefineData :: QName -> [(QName, (Quantity, R.Type))] -> UnquoteM Term
+    tcDefineData x cs = inOriginalContext $ (setDirty >>) $ getConstInfo' x >>= \case
+      Left _    -> throwError $ MissingDeclaration x
+      Right def -> do
         npars <- case theDef def of
                    DataOrRecSig n -> return n
-                   _              -> genericError $ prettyShow x ++
-                     " is not declared as a datatype or record, or it already has a definition."
+                   _              -> throwError $ DefineDataNotData x
 
         -- For some reasons, reifying parameters and adding them to the context via
         -- `addContext` before `toAbstract_` is different from substituting the type after
         -- `toAbstract_, so some dummy parameters are added and removed later.
-        es <- mapM (toAbstract_ . addDummy npars . snd) cs
+        es <- liftTCM $ mapM (toAbstract_ . addDummy npars . snd . snd) cs
         alwaysReportSDoc "tc.unquote.def" 10 $ vcat $
           [ "declaring constructors of" <+> prettyTCM x <+> ":" ] ++ map prettyA es
 
@@ -1029,23 +1053,26 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
         t   <- instantiateFull . defType =<< instantiateDef def
         tel <- reify =<< theTel <$> telViewUpTo npars t
 
-        es' <- case mapM (uncurry (substNames' tel) . splitPars npars) es of
-                 Nothing -> genericError $ "Number of parameters doesn't match!"
-                 Just es -> return es
+        es' <- forM es \ e -> do
+          (ptel, core) <- splitPars npars e
+          -- Mario, 2024-10-18: cannot trigger this error:
+          -- genericError "Number of parameters doesn't match!"
+          return $ fromMaybe __IMPOSSIBLE__ $ substNames' tel ptel core
 
         ac <- asksTC (^. lensIsAbstract)
         let i = mkDefInfo (nameConcrete $ qnameName x) noFixity' PublicAccess ac noRange
             conNames = map fst cs
-            toAxiom c e = A.Axiom ConName i defaultArgInfo Nothing c e
-            as = zipWith toAxiom conNames es'
+            conQuantities = map (fst . snd) cs
+            toAxiom c q e = A.Axiom ConName i (setQuantity q defaultArgInfo) Nothing c e
+            as = zipWith3 toAxiom conNames conQuantities es'
             lams = map (\case {A.TBind _ tac (b :| []) _ -> A.DomainFree (tbTacticAttr tac) b
                               ;_ -> __IMPOSSIBLE__ }) tel
         alwaysReportSDoc "tc.unquote.def" 10 $ vcat $
           [ "checking datatype: " <+> prettyTCM x <+> " with constructors:"
           , nest 2 (vcat (map prettyTCM conNames))
           ]
-        checkDataDef i x YesUniverseCheck (A.DataDefParams Set.empty lams) as
-        primUnitUnit
+        liftTCM $ checkDataDef i x YesUniverseCheck (A.DataDefParams Set.empty lams) as
+        liftTCM primUnitUnit
       where
         addDummy :: Int -> R.Type -> R.Type
         addDummy 0 t = t
@@ -1071,7 +1098,7 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
     tcDefineFun :: QName -> [R.Clause] -> UnquoteM Term
     tcDefineFun x cs = inOriginalContext $ (setDirty >>) $ liftTCM $ do
       whenM (isLeft <$> getConstInfo' x) $
-        genericError $ "Missing declaration for " ++ prettyShow x
+        unquoteError $ MissingDeclaration x
       cs <- mapM (toAbstract_ . QNamed x) cs
       alwaysReportSDoc "tc.unquote.def" 10 $ vcat $ map prettyA cs
       let accessDontCare = __IMPOSSIBLE__  -- or ConcreteDef, value not looked at
@@ -1085,13 +1112,13 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
 
     tcPragmaForeign :: Text -> Text -> TCM Term
     tcPragmaForeign backend code = do
-      addForeignCode (T.unpack backend) (T.unpack code)
+      addForeignCode backend (T.unpack code)
       primUnitUnit
 
     tcPragmaCompile :: Text -> QName -> Text -> TCM Term
     tcPragmaCompile backend name code = do
       modifySignature $ updateDefinition name $
-        addCompilerPragma (T.unpack backend) $ CompilerPragma noRange (T.unpack code)
+        addCompilerPragma backend $ CompilerPragma noRange (T.unpack code)
       primUnitUnit
 
     tcRunSpeculative :: Term -> UnquoteM Term
@@ -1131,10 +1158,14 @@ evalTCM v = Bench.billTo [Bench.Typing, Bench.Reflection] do
         solveSomeAwakeConstraints isInstance True  -- Force solving them now!
       primUnitUnit
 
-    splitPars :: Int -> A.Expr -> ([A.TypedBinding], A.Expr)
-    splitPars 0 e = ([] , e)
-    splitPars npars (A.Pi _ (n :| _) e) = first (n :) (splitPars (npars - 1) e)
-    splitPars npars e = __IMPOSSIBLE__
+    splitPars :: Int -> A.Expr -> UnquoteM ([A.TypedBinding], A.Expr)
+    splitPars 0     = return . ([],)
+    splitPars npars = \case
+      A.Pi _ (n :| _) e -> first (n :) <$> splitPars (npars - 1) e
+      A.Fun{}           -> __IMPOSSIBLE__  -- trusting the original author of this function
+      A.ScopedExpr{}    -> __IMPOSSIBLE__  -- trusting the original author of this function
+      e                 -> throwError $ TooManyParameters npars e
+
 ------------------------------------------------------------------------
 -- * Trusted executables
 ------------------------------------------------------------------------
@@ -1148,9 +1179,7 @@ type StdErr  = Text
 --
 requireAllowExec :: TCM ()
 requireAllowExec = do
-  allowExec <- optAllowExec <$> pragmaOptions
-  unless allowExec $
-    typeError $ GenericError "Missing option --allow-exec"
+  unlessM (optAllowExec <$> pragmaOptions) $ typeError NeedOptionAllowExec
 
 -- | Convert an @ExitCode@ to an Agda natural number.
 --
@@ -1167,34 +1196,15 @@ tcExec exe args stdIn = do
   requireAllowExec
   exes <- optTrustedExecutables <$> commandLineOptions
   case Map.lookup exe exes of
-    Nothing -> raiseExeNotTrusted exe exes
+    Nothing -> execError $ ExeNotTrusted exe exes
     Just fp -> do
       -- Check that the executable exists.
-      unlessM (liftIO $ doesFileExist fp) $ raiseExeNotFound exe fp
+      unlessM (liftIO $ doesFileExist fp) $ execError $ ExeNotFound exe fp
       -- Check that the executable is executable.
-      unlessM (liftIO $ executable <$> getPermissions fp) $ raiseExeNotExecutable exe fp
+      unlessM (liftIO $ executable <$> getPermissions fp) $ execError $ ExeNotExecutable exe fp
 
       let strArgs    = T.unpack <$> args
-      let strStdIn   = T.unpack stdIn
-      (datExitCode, strStdOut, strStdErr) <- lift $ readProcessWithExitCode fp strArgs strStdIn
+      (datExitCode, txtStdOut, txtStdErr) <- liftIO $ readProcessWithExitCode fp strArgs stdIn
       let natExitCode = exitCodeToNat datExitCode
-      let txtStdOut   = T.pack strStdOut
-      let txtStdErr   = T.pack strStdErr
       toR <- toTerm
       return $ toR (natExitCode, (txtStdOut, txtStdErr))
-
--- | Raise an error if the trusted executable cannot be found.
---
-raiseExeNotTrusted :: ExeName -> Map ExeName FilePath -> TCM a
-raiseExeNotTrusted exe exes = genericDocError =<< do
-  vcat . map pretty $
-    ("Could not find '" ++ T.unpack exe ++ "' in list of trusted executables:") :
-    [ "  - " ++ T.unpack exe | exe <- Map.keys exes ]
-
-raiseExeNotFound :: ExeName -> FilePath -> TCM a
-raiseExeNotFound exe fp = genericDocError =<< do
-  text $ "Could not find file '" ++ fp ++ "' for trusted executable " ++ T.unpack exe
-
-raiseExeNotExecutable :: ExeName -> FilePath -> TCM a
-raiseExeNotExecutable exe fp = genericDocError =<< do
-  text $ "File '" ++ fp ++ "' for trusted executable" ++ T.unpack exe ++ " does not have permission to execute"

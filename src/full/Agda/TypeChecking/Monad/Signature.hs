@@ -4,8 +4,6 @@ module Agda.TypeChecking.Monad.Signature where
 
 import Prelude hiding (null)
 
-import qualified Control.Monad.Fail as Fail
-
 import Control.Arrow                 ( first, second )
 import Control.Monad.Except          ( ExceptT )
 import Control.Monad.State           ( StateT  )
@@ -58,9 +56,6 @@ import {-# SOURCE #-} Agda.TypeChecking.Pretty
 import {-# SOURCE #-} Agda.TypeChecking.ProjectionLike
 import {-# SOURCE #-} Agda.TypeChecking.Reduce
 import {-# SOURCE #-} Agda.TypeChecking.Opacity
-
-import {-# SOURCE #-} Agda.Compiler.Treeless.Erase
-import {-# SOURCE #-} Agda.Compiler.Builtin
 
 import Agda.Utils.CallStack.Base
 import Agda.Utils.Either
@@ -189,10 +184,10 @@ addConstant q d = do
 -- does not need to be supplied.
 
 addConstant' ::
-  QName -> ArgInfo -> QName -> Type -> Defn -> TCM ()
-addConstant' q info x t def = do
+  QName -> ArgInfo -> Type -> Defn -> TCM ()
+addConstant' q info t def = do
   lang <- getLanguage
-  addConstant q $ defaultDefn info x t lang def
+  addConstant q $ defaultDefn info q t lang def
 
 -- | Set termination info of a defined function symbol.
 setTerminates :: MonadTCState m => QName -> Bool -> m ()
@@ -238,25 +233,9 @@ mkPragma s = CompilerPragma <$> getCurrentRange <*> pure s
 
 -- | Add a compiler pragma `{-\# COMPILE <backend> <name> <text> \#-}`
 addPragma :: BackendName -> QName -> String -> TCM ()
-addPragma b q s = ifM erased
-  {- then -} (warning $ PragmaCompileErased b q)
-  {- else -} $ do
+addPragma b q s = do
     pragma <- mkPragma s
     modifySignature $ updateDefinition q $ addCompilerPragma b pragma
-
-  where
-
-  erased :: TCM Bool
-  erased = do
-    def <- theDef <$> getConstInfo q
-    case def of
-      -- If we have a defined symbol, we check whether it is erasable
-      Function{} ->
-        locallyTC      eActiveBackendName (const $ Just b) $
-        locallyTCState stBackends         (const $ builtinBackends) $
-        isErasable q
-     -- Otherwise (Axiom, Datatype, Record type, etc.) we keep it
-      _ -> pure False
 
 getUniqueCompilerPragma :: BackendName -> QName -> TCM (Maybe CompilerPragma)
 getUniqueCompilerPragma backend q = do
@@ -264,11 +243,10 @@ getUniqueCompilerPragma backend q = do
   case ps of
     []  -> return Nothing
     [p] -> return $ Just p
-    (_:p1:_) ->
-      setCurrentRange p1 $
-            genericDocError =<< do
-                  hang (text ("Conflicting " ++ backend ++ " pragmas for") <+> pretty q <+> "at") 2 $
-                       vcat [ "-" <+> pretty (getRange p) | p <- ps ]
+    _:p1:_ -> setCurrentRange p1 do
+      typeError . CustomBackendError backend =<< do
+        hang (hsep [ "Conflicting", pretty backend, "pragmas for", prettyTCM q, "at" ]) 2 $
+          vcat [ "-" <+> pretty (getRange p) | p <- ps ]
 
 setFunctionFlag :: FunctionFlag -> Bool -> QName -> TCM ()
 setFunctionFlag flag val q = modifyGlobalDefinition q $ set (lensTheDef . funFlag flag) val
@@ -579,7 +557,6 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
             t   = defType d `piApply` ts'
             pol = defPolarity d `apply` ts'
             occ = defArgOccurrences d `apply` ts'
-            gen = defArgGeneralizable d `apply` ts'
             inst = defInstance d
             -- the name is set by the addConstant function
             nd :: QName -> TCM Definition
@@ -593,7 +570,6 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                     , defType           = t
                     , defPolarity       = pol
                     , defArgOccurrences = occ
-                    , defArgGeneralizable = gen
                     , defGeneralizedParams = [] -- This is only needed for type checking data/record defs so no need to copy it.
                     , defDisplay        = []
                     , defMutual         = -1   -- TODO: mutual block?
@@ -656,7 +632,7 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                          , recConHead = copyConHead c
                          , recFields  = (map . fmap) copyName fs
                          }
-                GeneralizableVar -> return GeneralizableVar
+                GeneralizableVar gv -> return $ GeneralizableVar $ gv `apply` ts'
                 _ -> do
                   (mst, _, cc) <- compileClauses Nothing [cl] -- Andreas, 2012-10-07 non need for record pattern translation
                   fun          <- emptyFunctionData
@@ -687,7 +663,6 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                             _ -> Def x $ map Apply ts'
                         , clauseType        = Just $ defaultArg t
                         , clauseCatchall    = False
-                        , clauseExact       = Just True
                         , clauseRecursive   = Just False -- definitely not recursive
                         , clauseUnreachable = Just False -- definitely not unreachable
                         , clauseEllipsis    = NoEllipsis
@@ -744,13 +719,14 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
 -- | Add a display form to a definition (could be in this or imported signature).
 addDisplayForm :: QName -> DisplayForm -> TCM ()
 addDisplayForm x df = do
+  -- Check whether display form is recursive and thus illegal.
+  xs <- chaseDisplayForms df Set.empty
+  if x `Set.member` xs then warning $ InvalidDisplayForm x "it is recursive" else do
   d <- makeOpen df
   let add = updateDefinition x $ \ def -> def{ defDisplay = d : defDisplay def }
   ifM (isLocal x)
     {-then-} (modifySignature add)
     {-else-} (stImportsDisplayForms `modifyTCLens` HMap.insertWith (++) x [d])
-  whenM (hasLoopingDisplayForm x) $
-    typeError . GenericDocError =<< do "Cannot add recursive display form for" <+> pretty x
 
 isLocal :: ReadTCState m => QName -> m Bool
 isLocal x = HMap.member x <$> useR (stSignature . sigDefinitions)
@@ -767,23 +743,46 @@ hasDisplayForms :: (HasConstInfo m, ReadTCState m) => QName -> m Bool
 hasDisplayForms = fmap (not . null) . getDisplayForms
 
 -- | Find all names used (recursively) by display forms of a given name.
-chaseDisplayForms :: QName -> TCM (Set QName)
-chaseDisplayForms q = go Set.empty [q]
-  where
-    go :: Set QName        -- Accumulator.
-       -> [QName]          -- Work list.  TODO: make work set to avoid duplicate chasing?
-       -> TCM (Set QName)
-    go used []       = pure used
-    go used (q : qs) = do
-      let rhs (Display _ _ e) = e   -- Only look at names in the right-hand side (#1870)
-      let notYetUsed x = if x `Set.member` used then Set.empty else Set.singleton x
-      ds <- namesIn' notYetUsed . map (rhs . dget)
-            <$> (getDisplayForms q `catchError_` \ _ -> pure [])  -- might be a pattern synonym
-      go (Set.union ds used) (Set.toList ds ++ qs)
+--
+class ChaseDisplayForms a where
+  chaseDisplayForms ::
+       a                 -- ^ Search this recursively for display form names.
+    -> Set QName         -- ^ Already processed names (accumulator).
+    -> TCM (Set QName)   -- ^ Found names (superset of accumulator)
 
--- | Check if a display form is looping.
-hasLoopingDisplayForm :: QName -> TCM Bool
-hasLoopingDisplayForm q = Set.member q <$> chaseDisplayForms q
+instance ChaseDisplayForms QName where
+  chaseDisplayForms q used
+    | q `Set.member` used = return used
+    | otherwise           = do
+        reportSDoc "tc.display.recursive" 90 $ sep
+          [ "Chasing display form", prettyTCM q, "with accumulator", prettyTCM (Set.toList used) ]
+        xs <- getDisplayForms q `catchError_` const (pure [])  -- might be a pattern synonym
+        chaseDisplayForms xs (Set.insert q used)
+
+instance ChaseDisplayForms DisplayTerm where
+  chaseDisplayForms e used = do
+    let notYetUsed x = if x `Set.member` used then Set.empty else Set.singleton x
+    let ds = namesIn' notYetUsed e
+    chaseDisplayForms ds used
+
+instance ChaseDisplayForms DisplayForm where
+  -- Only look at names in the right-hand side (#1870)
+  chaseDisplayForms = chaseDisplayForms . dfRHS
+
+instance ChaseDisplayForms a => ChaseDisplayForms (Open a) where
+  chaseDisplayForms = chaseDisplayForms . openThing
+
+instance ChaseDisplayForms a => ChaseDisplayForms (Set a) where
+  chaseDisplayForms s = case Set.minView s of
+    Nothing      -> return
+    Just (x, s') -> chaseDisplayForms x >=> chaseDisplayForms s'
+
+instance ChaseDisplayForms a => ChaseDisplayForms [a] where
+  chaseDisplayForms []     = return
+  chaseDisplayForms (x:xs) = chaseDisplayForms x >=> chaseDisplayForms xs
+  -- NB: The following does not work because of lacking instance Ord LocalDisplayForm:
+  -- chaseDisplayForms = chaseDisplayForms . Set.toList
+
 
 canonicalName :: HasConstInfo m => QName -> m QName
 canonicalName x = do
@@ -856,7 +855,6 @@ sigError a = \case
 
 class ( Functor m
       , Applicative m
-      , Fail.MonadFail m
       , HasOptions m
       , MonadDebug m
       , MonadTCEnv m

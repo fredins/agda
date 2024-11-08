@@ -14,12 +14,13 @@ import qualified Data.List                    as List
 import           Data.Map                     (Map)
 import qualified Data.Map                     as Map
 import           Data.Maybe                   (listToMaybe)
+import qualified Data.Text                    as T
 
-import {-# SOURCE #-} Agda.TypeChecking.Monad.Base
+import Agda.TypeChecking.Monad.Base.Types
   (HighlightingLevel, HighlightingMethod, Comparison, Polarity)
 
 import           Agda.Syntax.Abstract         (QName)
-import           Agda.Syntax.Common           (InteractionId (..), Modality)
+import           Agda.Syntax.Common           (BackendName, InteractionId (..), Modality)
 import           Agda.Syntax.Internal         (ProblemId, Blocker)
 import           Agda.Syntax.Position
 import           Agda.Syntax.Scope.Base       (ScopeInfo)
@@ -148,10 +149,11 @@ data Interaction' range
     -- show those instead.
   | Cmd_metas Rewrite
 
-    -- | A command that fails if there are any unsolved
+    -- | Load a file and fail if there are any unsolved
     -- meta-variables. By default no output is generated if the
     -- command is successful.
-  | Cmd_no_metas
+    -- (This command is used in Agda's installation script (Setup.hs)).
+  | Cmd_load_no_metas FilePath
 
     -- | Shows all the top-level names in the given module, along with
     -- their types. Uses the top-level scope.
@@ -421,7 +423,7 @@ instance Read a => Read (Position' a) where
 ---------------------------------------------------------
 -- | Available backends.
 
-data CompilerBackend = LaTeX | QuickLaTeX | OtherBackend String
+data CompilerBackend = LaTeX | QuickLaTeX | OtherBackend BackendName
     deriving (Eq)
 
 -- TODO 2021-08-25 get rid of custom Show instance
@@ -432,7 +434,7 @@ instance Pretty CompilerBackend where
   pretty = \case
     LaTeX          -> "LaTeX"
     QuickLaTeX     -> "QuickLaTeX"
-    OtherBackend s -> text s
+    OtherBackend s -> pretty s
 
 instance Read CompilerBackend where
   readsPrec _ s = do
@@ -440,7 +442,7 @@ instance Read CompilerBackend where
     let b = case t of
               "LaTeX"      -> LaTeX
               "QuickLaTeX" -> QuickLaTeX
-              _            -> OtherBackend t
+              _            -> OtherBackend $ T.pack t
     return (b, s)
 
 -- | Ordered ascendingly by degree of normalization.

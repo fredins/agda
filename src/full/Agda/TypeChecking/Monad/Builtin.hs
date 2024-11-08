@@ -4,16 +4,13 @@ module Agda.TypeChecking.Monad.Builtin
   , module Agda.Syntax.Builtin  -- The names are defined here.
   ) where
 
-import qualified Control.Monad.Fail as Fail
-
-import Control.Monad                ( liftM2, void )
-import Control.Monad.Except
+import Control.Monad.Except         ( MonadError(..), ExceptT )
 import Control.Monad.IO.Class       ( MonadIO(..) )
-import Control.Monad.Reader
-import Control.Monad.State
-import Control.Monad.Trans.Identity (IdentityT)
+import Control.Monad.Reader         ( ReaderT )
+import Control.Monad.State          ( StateT )
+import Control.Monad.Trans.Identity ( IdentityT )
 import Control.Monad.Trans.Maybe
-import Control.Monad.Writer
+import Control.Monad.Writer         ( WriterT )
 
 import Data.Function ( on )
 import qualified Data.Map as Map
@@ -41,7 +38,7 @@ import Agda.Utils.Impossible
 
 class ( Functor m
       , Applicative m
-      , Fail.MonadFail m
+      , Monad m
       ) => HasBuiltins m where
   getBuiltinThing :: SomeBuiltin -> m (Maybe (Builtin PrimFun))
 
@@ -74,7 +71,7 @@ instance MonadIO m => HasBuiltins (TCMT m) where
 newtype BuiltinAccess a = BuiltinAccess { unBuiltinAccess :: TCState -> a }
   deriving (Functor, Applicative, Monad)
 
-instance Fail.MonadFail BuiltinAccess where
+instance MonadFail BuiltinAccess where
   fail msg = BuiltinAccess $ \_ -> error msg
 
 instance HasBuiltins BuiltinAccess where
@@ -109,7 +106,7 @@ litType = \case
   where
     el t = El (mkType 0) t
 
-setBuiltinThings :: BuiltinThings PrimFun -> TCM ()
+setBuiltinThings :: BuiltinThings -> TCM ()
 setBuiltinThings b = stLocalBuiltins `setTCLens` b
 
 bindBuiltinName :: BuiltinId -> Term -> TCM ()
@@ -152,6 +149,21 @@ getBuiltinRewriteRelations' = fmap rels <$> getBuiltinThing (BuiltinName builtin
     Prim{}    -> __IMPOSSIBLE__
     Builtin{} -> __IMPOSSIBLE__
 
+{-# INLINABLE getBuiltinName_ #-}
+getBuiltinName_ :: (HasBuiltins m, MonadTCError m)
+  => BuiltinId -> m QName
+getBuiltinName_ x =
+  fromMaybeM (typeError $ NoBindingForBuiltin x) $ getBuiltinName' x
+
+-- {-# INLINABLE getBuiltinName' #-}
+-- -- | Returns 'Nothing' if built-in is not bound or bound to a 'Prim' or anything other than a 'Def'.
+-- getBuiltinName' :: HasBuiltins m => BuiltinId -> m (Maybe Term)
+-- getBuiltinName' x = (getBuiltinName =<<) <$> getBuiltin' x
+--   where
+--     getBuiltinName = \case
+--       Def f [] -> Just f
+--       _        -> Nothing
+
 {-# INLINABLE getBuiltin #-}
 getBuiltin :: (HasBuiltins m, MonadTCError m)
            => BuiltinId -> m Term
@@ -159,19 +171,24 @@ getBuiltin x =
   fromMaybeM (typeError $ NoBindingForBuiltin x) $ getBuiltin' x
 
 {-# INLINABLE getBuiltin' #-}
+-- | Returns 'Nothing' if built-in is not bound or bound to a 'Prim'.
 getBuiltin' :: HasBuiltins m => BuiltinId -> m (Maybe Term)
-getBuiltin' x = (getBuiltin =<<) <$> getBuiltinThing (BuiltinName x) where
-  getBuiltin BuiltinRewriteRelations{} = __IMPOSSIBLE__
-  getBuiltin (Builtin t)               = Just $ killRange t
-  getBuiltin _                         = Nothing
+getBuiltin' x = (getBuiltin =<<) <$> getBuiltinThing (BuiltinName x)
+  where
+    getBuiltin = \case
+      Builtin t                 -> Just $ killRange t
+      Prim{}                    -> Nothing
+      BuiltinRewriteRelations{} -> __IMPOSSIBLE__
 
 {-# INLINABLE getPrimitive' #-}
+-- | Returns 'Nothing' if primitive is not bound or bound to a 'Builtin'.
 getPrimitive' :: HasBuiltins m => PrimitiveId -> m (Maybe PrimFun)
 getPrimitive' x = (getPrim =<<) <$> getBuiltinThing (PrimitiveName x)
   where
-    getPrim (Prim pf) = return pf
-    getPrim BuiltinRewriteRelations{} = __IMPOSSIBLE__
-    getPrim _         = Nothing
+    getPrim = \case
+      Prim pf                   -> return pf
+      Builtin{}                 -> Nothing
+      BuiltinRewriteRelations{} -> __IMPOSSIBLE__
 
 {-# INLINABLE getPrimitive #-}
 getPrimitive :: (HasBuiltins m, MonadError TCErr m, MonadTCEnv m, ReadTCState m)
@@ -294,6 +311,7 @@ primInteger, primIntegerPos, primIntegerNegSuc,
     primAgdaTCMWorkOnTypes,
     primAgdaTCMRunSpeculative,
     primAgdaTCMExec,
+    primAgdaTCMCheckFromString,
     primAgdaTCMGetInstances,
     primAgdaTCMSolveInstances,
     primAgdaTCMPragmaForeign,
@@ -512,6 +530,7 @@ primAgdaTCMNoConstraints              = getBuiltin builtinAgdaTCMNoConstraints
 primAgdaTCMWorkOnTypes                = getBuiltin builtinAgdaTCMWorkOnTypes
 primAgdaTCMRunSpeculative             = getBuiltin builtinAgdaTCMRunSpeculative
 primAgdaTCMExec                       = getBuiltin builtinAgdaTCMExec
+primAgdaTCMCheckFromString            = getBuiltin builtinAgdaTCMCheckFromString
 primAgdaTCMGetInstances               = getBuiltin builtinAgdaTCMGetInstances
 primAgdaTCMSolveInstances             = getBuiltin builtinAgdaTCMSolveInstances
 primAgdaTCMPragmaForeign              = getBuiltin builtinAgdaTCMPragmaForeign
@@ -529,9 +548,9 @@ data CoinductionKit = CoinductionKit
 
 coinductionKit' :: TCM CoinductionKit
 coinductionKit' = do
-  Def inf   _ <- primInf
-  Def sharp _ <- primSharp
-  Def flat  _ <- primFlat
+  inf   <- getBuiltinName_ builtinInf
+  sharp <- getBuiltinName_ builtinSharp
+  flat  <- getBuiltinName_ builtinFlat
   return $ CoinductionKit
     { nameOfInf   = inf
     , nameOfSharp = sharp
@@ -574,12 +593,12 @@ mkSortKit prop set sset propomega setomega ssetomega = SortKit
 -- we report a type error rather than exploding.
 sortKit :: (HasBuiltins m, MonadTCError m, HasOptions m) => m SortKit
 sortKit = do
-  Def prop     _  <- getBuiltin builtinProp
-  Def set      _  <- getBuiltin builtinSet
-  Def sset     _  <- getBuiltin builtinStrictSet
-  Def propomega _ <- getBuiltin builtinPropOmega
-  Def setomega _  <- getBuiltin builtinSetOmega
-  Def ssetomega _ <- getBuiltin builtinSSetOmega
+  prop      <- getBuiltinName_ builtinProp
+  set       <- getBuiltinName_ builtinSet
+  sset      <- getBuiltinName_ builtinStrictSet
+  propomega <- getBuiltinName_ builtinPropOmega
+  setomega  <- getBuiltinName_ builtinSetOmega
+  ssetomega <- getBuiltinName_ builtinSSetOmega
   return $ mkSortKit prop set sset propomega setomega ssetomega
 
 -- | Compute a 'SortKit' in contexts that do not support failure (e.g.
@@ -588,12 +607,12 @@ sortKit = do
 -- checking.
 infallibleSortKit :: HasBuiltins m => m SortKit
 infallibleSortKit = do
-  Def prop     _  <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinProp
-  Def set      _  <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinSet
-  Def sset     _  <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinStrictSet
-  Def propomega _ <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinPropOmega
-  Def setomega _  <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinSetOmega
-  Def ssetomega _ <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinSSetOmega
+  prop      <- fromMaybe __IMPOSSIBLE__ <$> getBuiltinName' builtinProp
+  set       <- fromMaybe __IMPOSSIBLE__ <$> getBuiltinName' builtinSet
+  sset      <- fromMaybe __IMPOSSIBLE__ <$> getBuiltinName' builtinStrictSet
+  propomega <- fromMaybe __IMPOSSIBLE__ <$> getBuiltinName' builtinPropOmega
+  setomega  <- fromMaybe __IMPOSSIBLE__ <$> getBuiltinName' builtinSetOmega
+  ssetomega <- fromMaybe __IMPOSSIBLE__ <$> getBuiltinName' builtinSSetOmega
   return $ mkSortKit prop set sset propomega setomega ssetomega
 
 ------------------------------------------------------------------------
@@ -753,7 +772,6 @@ conidView' = do
 
 -- | Get the name of the equality type.
 primEqualityName :: TCM QName
--- primEqualityName = getDef =<< primEquality  -- LEADS TO IMPORT CYCLE
 primEqualityName = do
   eq <- primEquality
   -- Andreas, 2014-05-17 moved this here from TC.Rules.Def

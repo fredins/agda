@@ -6,7 +6,7 @@ module Agda.TypeChecking.Serialise.Instances.Highlighting where
 
 import qualified Data.Map.Strict as Map
 import Data.Strict.Tuple (Pair(..))
-import Data.Int (Int32)
+import Data.Word (Word32)
 
 import qualified Agda.Interaction.Highlighting.Range   as HR
 import qualified Agda.Interaction.Highlighting.Precise as HP
@@ -92,6 +92,8 @@ instance EmbPrj HP.OtherAspect where
   icod_ HP.ConfluenceProblem    = pure 12
   icod_ HP.MissingDefinition    = pure 13
   icod_ HP.ShadowingInTelescope = pure 14
+  icod_ HP.CosmeticProblem      = pure 15
+  icod_ HP.InstanceProblem      = pure 16
 
   value = \case
     0  -> pure HP.Error
@@ -109,6 +111,8 @@ instance EmbPrj HP.OtherAspect where
     12 -> pure HP.ConfluenceProblem
     13 -> pure HP.MissingDefinition
     14 -> pure HP.ShadowingInTelescope
+    15 -> pure HP.CosmeticProblem
+    16 -> pure HP.InstanceProblem
     _  -> malformed
 
 instance EmbPrj HP.Aspects where
@@ -135,7 +139,7 @@ instance EmbPrj a => EmbPrj (RM.RangeMap a) where
       convert (Cons start (Cons end (Cons entry ys))) xs
 
   value = vcase (fmap (RM.RangeMap . Map.fromDistinctAscList) . convert []) where
-    convert :: [(Int, RM.PairInt a)] -> [Int32] -> R [(Int, RM.PairInt a)]
+    convert :: [(Int, RM.PairInt a)] -> [Word32] -> R [(Int, RM.PairInt a)]
     convert !ys [] = return ys
     convert  ys (start:end:entry:xs) = do
       !start <- value start

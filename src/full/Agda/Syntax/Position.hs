@@ -14,10 +14,10 @@ module Agda.Syntax.Position
   , mkRangeFile
   , positionInvariant
   , startPos
+  , startPos'
   , movePos
   , movePosByString
   , backupPos
-  , startPos'
 
     -- * Intervals
   , Interval
@@ -37,6 +37,7 @@ module Agda.Syntax.Position
   , consecutiveAndSeparated
   , intervalsToRange
   , intervalToRange
+  , rangeFromAbsolutePath
   , rangeIntervals
   , rangeFile
   , rangeModule'
@@ -73,7 +74,6 @@ import Control.Monad.Writer (runWriter, tell)
 
 import qualified Data.Foldable as Fold
 import Data.Function (on)
-import Data.Int
 import Data.List (sort)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -83,6 +83,7 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Semigroup (Semigroup(..))
 import Data.Void
+import Data.Word (Word32)
 
 import GHC.Generics (Generic)
 
@@ -95,7 +96,8 @@ import Agda.Utils.List2 (List2)
 import qualified Agda.Utils.Maybe.Strict as Strict
 import Agda.Utils.Null
 import Agda.Utils.Permutation
-
+import Agda.Utils.Set1 (Set1)
+import qualified Agda.Utils.Set1 as Set1
 import Agda.Utils.TypeLevel (IsBase, All, Domains)
 
 import Agda.Utils.Impossible
@@ -116,11 +118,11 @@ import Agda.Utils.Impossible
 data Position' a = Pn
   { srcFile :: !a
     -- ^ File.
-  , posPos  :: !Int32
+  , posPos  :: !Word32
     -- ^ Position, counting from 1.
-  , posLine :: !Int32
+  , posLine :: !Word32
     -- ^ Line number, counting from 1.
-  , posCol  :: !Int32
+  , posCol  :: !Word32
     -- ^ Column number, counting from 1.
   }
   deriving (Show, Functor, Foldable, Traversable, Generic)
@@ -129,7 +131,7 @@ positionInvariant :: Position' a -> Bool
 positionInvariant p =
   posPos p > 0 && posLine p > 0 && posCol p > 0
 
-importantPart :: Position' a -> (a, Int32)
+importantPart :: Position' a -> (a, Word32)
 importantPart p = (srcFile p, posPos p)
 
 instance Eq a => Eq (Position' a) where
@@ -234,7 +236,7 @@ posToInterval f p1 p2 = setIntervalFile f $
   else Interval p2 p1
 
 -- | The length of an interval.
-iLength :: Interval' a -> Int32
+iLength :: Interval' a -> Word32
 iLength i = posPos (iEnd i) - posPos (iStart i)
 
 -- | A range is a file name, plus a sequence of intervals, assumed to
@@ -371,6 +373,7 @@ instance HasRange a => HasRange [a]
 instance HasRange a => HasRange (List1 a)
 instance HasRange a => HasRange (List2 a)
 instance HasRange a => HasRange (Maybe a)
+instance HasRange a => HasRange (Set1 a)
 
 -- | Precondition: The ranges of the tuple elements must point to the
 -- same file (or be empty).
@@ -482,6 +485,9 @@ instance KillRange a => KillRange (Strict.Maybe a)
 instance {-# OVERLAPPABLE #-} (Ord a, KillRange a) => KillRange (Set a) where
   killRange = Set.map killRange
 
+instance (Ord a, KillRange a) => KillRange (Set1 a) where
+  killRange = Set1.map killRange
+
 instance (KillRange a, KillRange b) => KillRange (a, b) where
   killRange (x, y) = (killRange x, killRange y)
 
@@ -513,6 +519,13 @@ startPos' f = Pn
 -- | The first position in a file: position 1, line 1, column 1.
 startPos :: Maybe RangeFile -> Position
 startPos = startPos' . Strict.toStrict
+
+-- | Range pointing to the first position in the given file.
+rangeFromAbsolutePath :: AbsolutePath -> Range
+rangeFromAbsolutePath f = posToRange' src p0 p0
+  where
+    src = Strict.Just $ mkRangeFile f Nothing
+    p0  = startPos' ()
 
 -- | Ranges between two unknown positions
 noRange :: Range' a

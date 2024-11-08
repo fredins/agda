@@ -4,22 +4,23 @@ module Agda.Compiler.Backend.Base where
 
 import Agda.Interaction.Options (ArgDescr(..), OptDescr(..), Flag)
 import Agda.Syntax.Abstract.Name (QName)
-import Agda.Syntax.Common (IsMain)
+import Agda.Syntax.Common (BackendName, IsMain)
 import Agda.Syntax.TopLevelModuleName (TopLevelModuleName)
-import {-# SOURCE #-} Agda.TypeChecking.Monad.Base (Definition)
-
 
 import Control.DeepSeq (NFData, rnf)
 import Data.Map (Map)
+import Data.Text (Text)
 
 import GHC.Generics (Generic)
 
-data Backend_boot tcm where
-  Backend :: NFData opts => Backend'_boot tcm opts env menv mod def -> Backend_boot tcm
+type BackendVersion = Text
 
-data Backend'_boot tcm opts env menv mod def = Backend'
-  { backendName      :: String
-  , backendVersion   :: Maybe String
+data Backend_boot definition tcm where
+  Backend :: NFData opts => Backend'_boot definition tcm opts env menv mod def -> Backend_boot definition tcm
+
+data Backend'_boot definition tcm opts env menv mod def = Backend'
+  { backendName      :: BackendName
+  , backendVersion   :: Maybe BackendVersion
       -- ^ Optional version information to be printed with @--version@.
   , options          :: opts
       -- ^ Default options
@@ -44,7 +45,7 @@ data Backend'_boot tcm opts env menv mod def = Backend'
   , postModule       :: env -> menv -> IsMain -> TopLevelModuleName ->
                         [def] -> tcm mod
       -- ^ Called after all definitions of a module have been compiled.
-  , compileDef       :: env -> menv -> IsMain -> Definition -> tcm def
+  , compileDef       :: env -> menv -> IsMain -> definition -> tcm def
       -- ^ Compile a single definition.
   , scopeCheckingSuffices :: Bool
       -- ^ True if the backend works if @--only-scope-checking@ is used.
@@ -59,10 +60,10 @@ data Backend'_boot tcm opts env menv mod def = Backend'
 data Recompile menv mod = Recompile menv | Skip mod
 
 
-instance NFData (Backend_boot tcm) where
+instance NFData (Backend_boot definition tcm) where
   rnf (Backend b) = rnf b
 
-instance NFData opts => NFData (Backend'_boot tcm opts env menv mod def) where
+instance NFData opts => NFData (Backend'_boot definition tcm opts env menv mod def) where
   rnf (Backend' a b c d e f g h i j k l) =
     rnf a `seq` rnf b `seq` rnf c `seq` rnf' d `seq` rnf e `seq`
     rnf f `seq` rnf g `seq` rnf h `seq` rnf i `seq` rnf j `seq`

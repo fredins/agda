@@ -24,14 +24,15 @@ import System.Directory
 
 import Agda.Interaction.Options.Warnings
 
+import Agda.Syntax.Common.Pretty
 import Agda.Syntax.Position
 
+import Agda.Utils.IO               ( showIOException )
 import Agda.Utils.Lens
 import Agda.Utils.List1            ( List1, toList )
 import Agda.Utils.List2            ( List2, toList )
 import qualified Agda.Utils.List1  as List1
 import Agda.Utils.Null
-import Agda.Syntax.Common.Pretty
 
 -- | A symbolic library name.
 --
@@ -48,6 +49,7 @@ data LibrariesFile = LibrariesFile
 -- | A symbolic executable name.
 --
 type ExeName = Text
+type ExeMap  = Map ExeName FilePath
 
 data ExecutablesFile = ExecutablesFile
   { efPath   :: FilePath
@@ -417,7 +419,7 @@ instance Pretty LibError' where
 
     ReadError e msg -> vcat
       [ text $ msg
-      , text $ E.displayException e
+      , text $ showIOException e
       ]
 
     DuplicateExecutable exeFile exe paths -> vcat $
@@ -433,7 +435,7 @@ instance Pretty LibParseError where
       [ "Bad library name:", quotes (text s) ]
     ReadFailure file e -> vcat
       [ hsep [ "Failed to read library file", text file <> "." ]
-      , "Reason:" <+> text (E.displayException e)
+      , "Reason:" <+> text (showIOException e)
       ]
 
     MissingFields   xs -> "Missing"   <+> listFields xs

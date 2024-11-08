@@ -41,7 +41,7 @@ appView' e = f (DL.toList es)
   where
   (f, es) = appView'' e
 
-  appView'' e = case e of
+  appView'' = \case
     App i e1 e2
       | Dot _ e2' <- unScope $ namedArg e2
       , Just f <- maybeProjTurnPostfix e2'
@@ -50,7 +50,7 @@ appView' e = f (DL.toList es)
     App i e1 arg | (f, es) <- appView'' e1 ->
       (f, es `DL.snoc` (fmap . fmap) (i,) arg)
     ScopedExpr _ e -> appView'' e
-    _              -> (Application e, mempty)
+    e              -> (Application e, mempty)
 
 maybeProjTurnPostfix :: Expr -> Maybe Expr
 maybeProjTurnPostfix e =
@@ -84,11 +84,10 @@ piView = \case
 unPiView :: PiView -> Expr
 unPiView (PiView tels t) = foldr (uncurry Pi) t tels
 
--- | Gather top-level 'AsP'atterns and 'AnnP'atterns to expose underlying pattern.
-asView :: A.Pattern -> ([Name], [A.Expr], A.Pattern)
-asView (A.AsP _ x p)  = (\(asb, ann, p) -> (unBind x : asb, ann, p)) $ asView p
-asView (A.AnnP _ a p) = (\(asb, ann, p) -> (asb, a : ann, p))        $ asView p
-asView p              = ([], [], p)
+-- | Gather top-level 'AsP'atterns to expose underlying pattern.
+asView :: A.Pattern -> ([Name], A.Pattern)
+asView (A.AsP _ x p)  = (\(asb, p) -> (unBind x : asb, p)) $ asView p
+asView p              = ([], p)
 
 -- | Remove top 'ScopedExpr' wrappers.
 unScope :: Expr -> Expr
@@ -332,6 +331,7 @@ instance ExprLike LetBinding where
       recurse e = recurseExpr f e
     case e of
       LetBind li ai x e e'  -> LetBind li ai x <$> recurse e <*> recurse e'
+      LetAxiom li ai x e    -> LetAxiom li ai x <$> recurse e
       LetPatBind li p e     -> LetPatBind li <$> recurse p <*> recurse e
       LetApply{}            -> pure e
       LetOpen{}             -> pure e
@@ -341,6 +341,7 @@ instance ExprLike LetBinding where
   foldExpr f e =
     case e of
       LetBind _ _ _ e e'    -> fold e `mappend` fold e'
+      LetAxiom _ _ _ e      -> fold e
       LetPatBind _ p e      -> fold p `mappend` fold e
       LetApply{}            -> mempty
       LetOpen{}             -> mempty
@@ -356,6 +357,7 @@ instance ExprLike LetBinding where
       trav e = traverseExpr f e
     case e of
       LetBind li ai x e e'  -> LetBind li ai x <$> trav e <*> trav e'
+      LetAxiom li ai x e    -> LetAxiom li ai x <$> trav e
       LetPatBind li p e     -> LetPatBind li <$> trav p <*> trav e
       LetApply{}            -> pure e
       LetOpen{}             -> pure e
@@ -497,7 +499,9 @@ instance DeclaredNames KName where
 
 instance DeclaredNames RecordDirectives where
   declaredNames (RecordDirectives i _ _ c) = kc where
-    kc = maybe mempty (singleton . WithKind k) c
+    kc = case c of
+      NamedRecCon c -> singleton $ WithKind k c
+      FreshRecCon{} -> mempty
     k  = maybe ConName (conKindOfName . rangedThing) i
 
 instance DeclaredNames Declaration where

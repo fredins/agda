@@ -7,7 +7,6 @@ module Agda.Compiler.MAlonzo.Compiler
 
 import Control.Arrow (second)
 import Control.DeepSeq
-import Control.Monad
 import Control.Monad.Except   ( throwError )
 import Control.Monad.IO.Class ( MonadIO(..) )
 import Control.Monad.Reader   ( MonadReader(..), asks, ReaderT, runReaderT, withReaderT)
@@ -61,7 +60,7 @@ import Agda.Syntax.TopLevelModuleName
 
 import Agda.TypeChecking.Datatypes
 import Agda.TypeChecking.Primitive (getBuiltinName)
-import Agda.TypeChecking.Pretty hiding ((<>))
+import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Warnings
@@ -218,14 +217,9 @@ data GHCDefinition = GHCDefinition
 
 ghcPreCompile :: GHCFlags -> TCM GHCEnv
 ghcPreCompile flags = do
-  cubical <- cubicalOption
-  let notSupported s =
-        typeError $ GenericError $
-          "Compilation of code that uses " ++ s ++ " is not supported."
-  case cubical of
-    Nothing      -> return ()
-    Just CErased -> return ()
-    Just CFull   -> notSupported "--cubical"
+  whenJustM cubicalOption \case
+    CErased -> pure ()
+    CFull   -> typeError $ CubicalCompilationNotSupported CFull
 
   outDir <- compileDir
   let ghcOpts = GHCOptions
@@ -308,6 +302,7 @@ ghcPreCompile flags = do
       , builtinAgdaTCMWorkOnTypes
       , builtinAgdaTCMRunSpeculative
       , builtinAgdaTCMExec
+      , builtinAgdaTCMCheckFromString
       , builtinAgdaTCMGetInstances
       , builtinAgdaTCMSolveInstances
       , builtinAgdaTCMPragmaForeign
@@ -367,8 +362,9 @@ ghcPostCompile _cenv _isMain mods = do
   -- FIXME: @curMName@ and @curIF@ are evil TCM state, but there does not appear to be
   --------- another way to retrieve the compilation root ("main" module or interaction focused).
   rootModuleName <- curMName
-  rootModule <- ifJust (Map.lookup rootModuleName mods) pure
-                $ genericError $ "Module " <> prettyShow rootModuleName <> " was not compiled!"
+  -- Mario, 2024-10-16: cannot trigger this error:
+  -- genericError $ "Module " <> prettyShow rootModuleName <> " was not compiled!"
+  let rootModule = Map.findWithDefault __IMPOSSIBLE__ rootModuleName mods
   flip runReaderT rootModule $ do
     copyRTEModules
     callGHC
@@ -465,7 +461,7 @@ ghcMayEraseType q = getHaskellPragma q <&> \case
 -- Compilation ------------------------------------------------------------
 
 imports ::
-  BuiltinThings PrimFun -> Set TopLevelModuleName -> [Definition] ->
+  BuiltinThings -> Set TopLevelModuleName -> [Definition] ->
   [HS.ImportDecl]
 imports builtinThings usedModules defs = hsImps ++ imps where
   hsImps :: [HS.ImportDecl]
@@ -518,9 +514,6 @@ mazRTEFloatImport (UsesFloat b) = [ HS.ImportDecl mazRTEFloat True Nothing | b ]
 
 definition :: Definition -> HsCompileM (UsesFloat, [HS.Decl], Maybe CheckedMainFunctionDef)
 -- ignore irrelevant definitions
-{- Andreas, 2012-10-02: Invariant no longer holds
-definition kit (Defn NonStrict _ _  _ _ _ _ _ _) = __IMPOSSIBLE__
--}
 definition Defn{defArgInfo = info, defName = q} | not $ usableModality info = do
   reportSDoc "compile.ghc.definition" 10 $
     ("Not compiling" <+> prettyTCM q) <> "."
@@ -539,11 +532,7 @@ definition def@Defn{defName = q, defType = ty, theDef = d} = do
   (uncurry (,,typeCheckedMainDef)) . second ((mainDecl ++) . infodecl q) <$>
     case d of
 
-      _ | Just (HsDefn r hs) <- pragma -> setCurrentRange r $
-          if is ghcEnvFlat
-          then genericError
-                "\"COMPILE GHC\" pragmas are not allowed for the FLAT builtin."
-          else do
+      _ | Just (HsDefn r hs) <- pragma -> setCurrentRange r $ do
             -- Make sure we have imports for all names mentioned in the type.
             hsty <- haskellType q
             mapM_ (`xqual` HS.Ident "_") (namesIn ty :: Set QName)
@@ -803,12 +792,7 @@ definition def@Defn{defName = q, defType = ty, theDef = d} = do
   function mhe fun = do
     (imp, ccls) <- fun
     case mhe of
-      Just (HsExport r name) -> setCurrentRange r $ do
-        env <- askGHCEnv
-        if Just q == ghcEnvFlat env
-        then genericError
-              "\"COMPILE GHC as\" pragmas are not allowed for the FLAT builtin."
-        else do
+      Just (HsExport r name) -> do
           t <- setCurrentRange r $ haskellType q
           let tsig :: HS.Decl
               tsig = HS.TypeSig [HS.Ident name] t
@@ -877,7 +861,9 @@ definition def@Defn{defName = q, defType = ty, theDef = d} = do
 
 constructorCoverageCode :: QName -> Int -> [QName] -> HaskellType -> [HaskellCode] -> HsCompileM [HS.Decl]
 constructorCoverageCode q np cs hsTy hsCons = do
-  liftTCM $ checkConstructorCount q cs hsCons
+  -- Check that number of constructors matches up.
+  unless (length cs == length hsCons) $
+    ghcBackendError $ ConstructorCountMismatch q cs hsCons
   ifM (liftTCM $ noCheckCover q) (return []) $ do
     ccs <- List.concat <$> zipWithM checkConstructorType cs hsCons
     cov <- liftTCM $ checkCover q hsTy np cs hsCons

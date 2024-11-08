@@ -7,13 +7,14 @@ module Agda.Compiler.ToTreeless
   , Pipeline(..)
   , CompilerPass(..)
   , compilerPass
+  , compilerPipeline
+  , CCConfig
+  , CCSubst(..)
   ) where
 
 import Prelude hiding ((!!))
 
-import Control.Monad        ( filterM, foldM, forM, zipWithM )
 import Control.Monad.Reader ( MonadReader(..), asks, ReaderT, runReaderT )
-import Control.Monad.Trans  ( lift )
 
 import Data.Maybe
 import Data.Map (Map)
@@ -268,10 +269,6 @@ casetree cc = do
         ]
       return v'
     CC.Case _ (CC.Branches True _ _ _ Just{} _ _) -> __IMPOSSIBLE__
-      -- Andreas, 2016-06-03, issue #1986: Ulf: "no catch-all for copatterns!"
-      -- lift $ do
-      --   typeError . GenericDocError =<< do
-      --     "Not yet implemented: compilation of copattern matching with catch-all clause"
     CC.Case (Arg _ n) (CC.Branches True conBrs _ _ Nothing _ _) -> lambdasUpTo n $ do
       mkRecord =<< traverse casetree (CC.content <$> conBrs)
     CC.Case (Arg i n) (CC.Branches False conBrs etaBr litBrs catchAll _ lazy) -> lambdasUpTo (n + 1) $ do

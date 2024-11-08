@@ -26,21 +26,27 @@ import Agda.TypeChecking.Positivity.Occurrence (Occurrence)
 
 import Agda.Utils.CallStack (HasCallStack)
 import Agda.Utils.Functor
+import Agda.Utils.List1 (List1)
 import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Null
+import Agda.Utils.Set1 (Set1)
+import qualified Agda.Utils.Set1 as Set1
+import Agda.Utils.Tuple (Pair(Pair))
+
 import Agda.Utils.Impossible
 
 
 type Fixities   = Map Name Fixity'
-type Polarities = Map Name [Occurrence]
+type Polarities = Map Name (List1 Occurrence)
 
 class Monad m => MonadFixityError m where
-  throwMultipleFixityDecls            :: [(Name, [Fixity'])] -> m a
-  throwMultiplePolarityPragmas        :: [Name] -> m a
-  warnUnknownNamesInFixityDecl        :: HasCallStack => [Name] -> m ()
-  warnUnknownNamesInPolarityPragmas   :: HasCallStack => [Name] -> m ()
-  warnUnknownFixityInMixfixDecl       :: HasCallStack => [Name] -> m ()
-  warnPolarityPragmasButNotPostulates :: HasCallStack => [Name] -> m ()
+  throwMultipleFixityDecls            :: List1 (Name, Pair Fixity') -> m a
+  throwMultiplePolarityPragmas        :: List1 Name -> m a
+  warnUnknownNamesInFixityDecl        :: HasCallStack => Set1 Name -> m ()
+  warnUnknownNamesInPolarityPragmas   :: HasCallStack => Set1 Name -> m ()
+  warnUnknownFixityInMixfixDecl       :: HasCallStack => Set1 Name -> m ()
+  warnPolarityPragmasButNotPostulates :: HasCallStack => Set1 Name -> m ()
+  warnEmptyPolarityPragma             :: HasCallStack => Range -> m ()
 
 -- | Add more fixities. Throw an exception for multiple fixity declarations.
 --   OR:  Disjoint union of fixity maps.  Throws exception if not disjoint.
@@ -48,7 +54,7 @@ class Monad m => MonadFixityError m where
 plusFixities :: MonadFixityError m => Fixities -> Fixities -> m Fixities
 plusFixities m1 m2
     -- If maps are not disjoint, report conflicts as exception.
-    | not (null isect) = throwMultipleFixityDecls isect
+    | Just ds <- List1.nonEmpty isect = throwMultipleFixityDecls ds
     -- Otherwise, do the union.
     | otherwise        = return $ Map.unionWithKey mergeFixites m1 m2
   where
@@ -62,7 +68,7 @@ plusFixities m1 m2
                       | otherwise = __IMPOSSIBLE__
 
     -- Compute a list of conflicts in a format suitable for error reporting.
-    isect = [ (x, map (Map.findWithDefault __IMPOSSIBLE__ x) [m1,m2])
+    isect = [ (x, fmap (Map.findWithDefault __IMPOSSIBLE__ x) $ Pair m1 m2)
             | (x, False) <- Map.assocs $ Map.intersectionWith compatible m1 m2 ]
 
     -- Check for no conflict.
@@ -90,13 +96,11 @@ instance MonadFixityError m => Semigroup (MonadicFixPol m) where
     p <- mergePolarities p1 p2
     return (f, p)
     where
-    mergePolarities p1 p2
-      | Map.null i = return (Map.union p1 p2)
-      | otherwise  = throwMultiplePolarityPragmas $
-                     map fst $ Map.toList i
-      where
-      -- Only the keys are used.
-      i = Map.intersection p1 p2
+    -- Merge disjoint maps.
+    mergePolarities p1 p2 =
+      List1.ifNull (Map.keys $ Map.intersection p1 p2)
+        {-then-} (return $ Map.union p1 p2)
+        {-else-} \ ks -> throwMultiplePolarityPragmas ks
 
 instance MonadFixityError m => Monoid (MonadicFixPol m) where
   mempty  = MonadicFixPol $ return (Map.empty, Map.empty)
@@ -118,35 +122,37 @@ fixitiesAndPolarities doWarn ds = do
 
   -- If we have names in fixity declarations which are not defined in the
   -- appropriate scope, raise a warning and delete them from fixs.
-  fixs <- ifNull (Map.keysSet fixs Set.\\ declared) (return fixs) $ \ unknownFixs -> do
-    when (doWarn == DoWarn) $ warnUnknownNamesInFixityDecl $ Set.toList unknownFixs
+  fixs <- Set1.ifNull (Map.keysSet fixs Set.\\ declared) (return fixs) $ \ unknownFixs -> do
+    when (doWarn == DoWarn) $ warnUnknownNamesInFixityDecl unknownFixs
     -- Note: Data.Map.restrictKeys requires containers >= 0.5.8.2
     -- return $ Map.restrictKeys fixs declared
     return $ Map.filterWithKey (\ k _ -> Set.member k declared) fixs
 
   -- Same for undefined names in polarity declarations.
-  pols <- ifNull (Map.keysSet pols Set.\\ declared) (return pols) $
+  pols <- Set1.ifNull (Map.keysSet pols Set.\\ declared) (return pols) $
     \ unknownPols -> do
-      when (doWarn == DoWarn) $ warnUnknownNamesInPolarityPragmas $ Set.toList unknownPols
+      when (doWarn == DoWarn) $ warnUnknownNamesInPolarityPragmas unknownPols
       -- Note: Data.Map.restrictKeys requires containers >= 0.5.8.2
       -- return $ Map.restrictKeys polarities declared
       return $ Map.filterWithKey (\ k _ -> Set.member k declared) pols
 
   -- If we have public mixfix identifiers without a corresponding fixity
   -- declaration, we raise a warning
-  ifNull (Set.filter isOpenMixfix publicNames Set.\\ Map.keysSet fixs) (return ()) $
-    when (doWarn == DoWarn) . warnUnknownFixityInMixfixDecl . Set.toList
+  Set1.unlessNull (Set.filter isOpenMixfix publicNames Set.\\ Map.keysSet fixs) $
+    when (doWarn == DoWarn) . warnUnknownFixityInMixfixDecl
 
   -- Check that every polarity pragma is used for a postulate.
-  ifNull (Map.keysSet pols Set.\\ postulates) (return ()) $
-    when (doWarn == DoWarn) . warnPolarityPragmasButNotPostulates . Set.toList
+  Set1.unlessNull (Map.keysSet pols Set.\\ postulates) $
+    when (doWarn == DoWarn) . warnPolarityPragmasButNotPostulates
 
   return (fixs, pols)
 
 fixitiesAndPolarities' :: MonadFixityError m => [Declaration] -> MonadicFixPol m
 fixitiesAndPolarities' = foldMap $ \case
   -- These declarations define polarities:
-  Pragma (PolarityPragma _ x occs) -> returnPol $ Map.singleton x occs
+  Pragma (PolarityPragma r x occs) ->
+    List1.ifNull occs (MonadicFixPol $ warnEmptyPolarityPragma r $> mempty) {-else-} \ occs ->
+      returnPol $ Map.singleton x occs
   -- These declarations define fixities:
   Syntax x syn    -> returnFix $ Map.singleton x (Fixity' noFixity syn $ getRange x)
   Infix  f xs     -> returnFix $ Map.fromList $ for (List1.toList xs) $ \ x -> (x, Fixity' f noNotation $ getRange x)
