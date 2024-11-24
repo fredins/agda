@@ -590,9 +590,6 @@ data MaybeOldQName = MaybeOldQName OldQName
 --
 newtype OldName a = OldName a
 
--- | Wrapper to resolve a name to a 'ResolvedName' (rather than an 'A.Expr').
-data ResolveQName = ResolveQName C.QName
-
 -- | Wrapper to resolve a name in a pattern.
 data PatName = PatName
   C.QName
@@ -635,16 +632,7 @@ instance ToAbstract MaybeOldQName where
       DefinedName _ d suffix -> do
         raiseWarningsOnUsage $ anameName d
         -- then we take note of generalized names used
-        case anameKind d of
-          GeneralizeName -> do
-            gvs <- useTC stGeneralizedVars
-            case gvs of   -- Subtle: Use (left-biased) union instead of insert to keep the old name if
-                          -- already present. This way we can sort by source location when generalizing
-                          -- (Issue 3354).
-                Just s -> stGeneralizedVars `setTCLens` Just (s `Set.union` Set.singleton (anameName d))
-                Nothing -> typeError $ GeneralizeNotSupportedHere $ anameName d
-          DisallowedGeneralizeName -> typeError $ GeneralizedVarInLetOpenedModule $ anameName d
-          _ -> return ()
+        addGeneralizable d
         -- and then we return the name
         return $ withSuffix suffix $ nameToExpr d
         where
@@ -672,12 +660,15 @@ instance ToAbstract MaybeOldQName where
         x :| [] -> raiseWarningsOnUsage x
         _       -> return ()
 
-
-instance ToAbstract ResolveQName where
-  type AbsOfCon ResolveQName = ResolvedName
-  toAbstract (ResolveQName x) = resolveName x >>= \case
+-- | Resolve a name and fail hard if it is not in scope.
+--
+resolveQName :: C.QName -> ScopeM ResolvedName
+resolveQName x = resolveName x >>= \case
     UnknownName -> notInScopeError x
-    q -> return q
+    q -> q <$ addGeneralizable q
+      -- Issue #7575:
+      -- If the name is a @variable@, add it to the things we wish to generalize.
+      -- If generalization is not supported here, this will throw an error.
 
 -- | A name resolved in a pattern.
 data APatName
@@ -1324,8 +1315,8 @@ scopeCheckModule r e x qm tel checkDs = do
 
 -- | Temporary data type to scope check a file.
 data TopLevel a = TopLevel
-  { topLevelPath           :: AbsolutePath
-    -- ^ The file path from which we loaded this module.
+  { topLevelSourceFile     :: SourceFile
+    -- ^ The file from which we loaded this module.
   , topLevelExpectedName   :: TopLevelModuleName
     -- ^ The expected module name
     --   (coming from the import statement that triggered scope checking this file).
@@ -1351,7 +1342,7 @@ topLevelModuleName = (^. scopeCurrent) . topLevelScope
 instance ToAbstract (TopLevel [C.Declaration]) where
     type AbsOfCon (TopLevel [C.Declaration]) = TopLevelInfo
 
-    toAbstract (TopLevel file expectedMName ds) =
+    toAbstract (TopLevel src expectedMName ds) =
       -- A file is a bunch of preliminary decls (imports etc.)
       -- plus a single module decl.
       case C.spanAllowedBeforeModule ds of
@@ -1393,6 +1384,7 @@ instance ToAbstract (TopLevel [C.Declaration]) where
 
                     -- Otherwise, reconstruct the top-level module name
                     _ -> do
+                      file <- srcFilePath src
                       let m = C.QName $ setRange (getRange m0) $
                               C.simpleName $ stringToRawName $
                               rootNameModule file
@@ -1415,7 +1407,7 @@ instance ToAbstract (TopLevel [C.Declaration]) where
                 -- checker.
                   top <- S.topLevelModuleName
                            (rawTopLevelModuleNameForQName m0)
-                  checkModuleName top (SourceFile file) (Just expectedMName)
+                  checkModuleName top src (Just expectedMName)
                   return (m0, top)
           setTopLevelModule top
           am <- toAbstract (NewModuleQName m)
@@ -1471,7 +1463,7 @@ niceDecls warn ds ret = setCurrentRange ds $ computeFixitiesAndPolarities warn d
   safeButNotBuiltin <- and2M
     -- NB: BlockArguments allow bullet-point style argument lists using @do@, hehe!
     do pure isSafe
-    do not <$> do Lens.isBuiltinModuleWithSafePostulates . filePath =<< getCurrentPath
+    do not <$> do isBuiltinModuleWithSafePostulates . fromMaybe __IMPOSSIBLE__ =<< asksTC envCurrentPath
 
   -- We need to pass the fixities to the nicifier for clause grouping.
   fixs <- useScope scopeFixities
@@ -1776,7 +1768,7 @@ instance ToAbstract NiceDeclaration where
       -- check that we do not postulate in --safe mode, unless it is a
       -- builtin module with safe postulates
       whenM ((Lens.getSafeMode <$> commandLineOptions) `and2M`
-             (not <$> (Lens.isBuiltinModuleWithSafePostulates . filePath =<< getCurrentPath)))
+             (not <$> (isBuiltinModuleWithSafePostulates . fromMaybe __IMPOSSIBLE__ =<< asksTC envCurrentPath)))
             (warning $ SafeFlagPostulate x)
       -- check the postulate
       singleton <$> toAbstractNiceAxiom AxiomName d
@@ -2343,6 +2335,40 @@ unGeneralized t = (mempty, t)
 alreadyGeneralizing :: ScopeM Bool
 alreadyGeneralizing = isJust <$> useTC stGeneralizedVars
 
+-- | In the context of scope checking an expression, given a resolved name @d@:
+--
+--   * If @d@ is a @variable@ (generalizable), add it to the collection 'stGeneralizedVars'
+--     of variables we wish to abstract over.
+--
+--   * Otherwise, do nothing.
+--
+class AddGeneralizable a where
+  addGeneralizable :: a -> ScopeM ()
+
+instance AddGeneralizable AbstractName where
+  addGeneralizable :: AbstractName -> ScopeM ()
+  addGeneralizable d = case anameKind d of
+    GeneralizeName -> do
+      gvs <- useTC stGeneralizedVars
+      case gvs of   -- Subtle: Use (left-biased) union instead of insert to keep the old name if
+                    -- already present. This way we can sort by source location when generalizing
+                    -- (Issue 3354).
+          Just s -> stGeneralizedVars `setTCLens` Just (s `Set.union` Set.singleton (anameName d))
+          Nothing -> typeError $ GeneralizeNotSupportedHere $ anameName d
+    DisallowedGeneralizeName -> typeError $ GeneralizedVarInLetOpenedModule $ anameName d
+    _ -> return ()
+
+instance AddGeneralizable ResolvedName where
+  addGeneralizable = \case
+    -- Only 'DefinedName' can be a @variable@.
+    DefinedName _ d NoSuffix -> addGeneralizable d
+    DefinedName _ d Suffix{} -> return ()
+    VarName{}                -> return ()
+    FieldName{}              -> return ()
+    ConstructorName{}        -> return ()
+    PatternSynResName{}      -> return ()
+    UnknownName{}            -> return ()
+
 collectGeneralizables :: ScopeM a -> ScopeM (Set A.QName, a)
 collectGeneralizables m =
   -- #5683: No nested generalization
@@ -2649,7 +2675,7 @@ instance ToAbstract C.Pragma where
 
   toAbstract pragma@(C.BuiltinPragma _ rb qx)
     | Just b' <- b, isUntypedBuiltin b' = do
-        q <- toAbstract $ ResolveQName qx
+        q <- resolveQName qx
         bindUntypedBuiltin b' q
         return [ A.BuiltinPragma rb q ]
         -- Andreas, 2015-02-14
@@ -2672,7 +2698,7 @@ instance ToAbstract C.Pragma where
               "Pragma BUILTIN " ++ getBuiltinId b' ++ ": expected unqualified identifier, " ++
               "but found " ++ prettyShow qx
     | otherwise = do
-          q0 <- toAbstract $ ResolveQName qx
+          q0 <- resolveQName qx
 
           -- Andreas, 2020-04-12, pr #4574.  For highlighting purposes:
           -- Rebind 'BuiltinPrim' as 'PrimName' and similar.

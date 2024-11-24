@@ -32,7 +32,6 @@ import System.Directory
 import System.FilePath
 
 import Agda.TypeChecking.Monad as TCM
-  hiding (initState, setCommandLineOptions)
 import qualified Agda.TypeChecking.Monad as TCM
 import qualified Agda.TypeChecking.Pretty as TCP
 import Agda.TypeChecking.Rules.Term (checkExpr, isType_)
@@ -371,15 +370,8 @@ maybeAbort m = do
             _ -> return (Command (Just x))
         Right a -> do
           liftIO $ popAbortedCommands q a
-          putTC $ initState
-            { stPersistentState = stPersistentState tcState
-            , stPreScopeState   =
-                (stPreScopeState initState)
-                  { stPrePragmaOptions =
-                      stPrePragmaOptions
-                        (stPreScopeState tcState)
-                  }
-            }
+          putTC $ set lensPragmaOptions (tcState ^. lensPragmaOptions) $
+            initStateFromPersistentState $ stPersistentState tcState
           put $ (initCommandState (commandQueue commandState))
             { optionsOnReload = optionsOnReload commandState
             }
@@ -620,7 +612,7 @@ interpret (Cmd_load_highlighting_info source) = do
     setCommandLineOpts =<< lift commandLineOptions
     resp <- lift $ liftIO . tellToUpdateHighlighting =<< do
       ex        <- liftIO $ doesFileExist source
-      absSource <- liftIO $ SourceFile <$> absolute source
+      absSource <- srcFromPath =<< liftIO (absolute source)
       if ex
         then
            do
@@ -907,7 +899,8 @@ cmd_load' file argv unsolvedOK mode cmd = do
     --
     -- Note that options are set below.
     fp  <- liftIO $ absolute file
-    src <- lift $ Imp.parseSource (SourceFile fp)
+    sf  <- liftTCM $ srcFromPath fp
+    src <- lift $ Imp.parseSource sf
     -- Andreas, 2024-08-03, see test/interaction/FileNotFound:
     -- Run 'getModificationTime' after 'parseSource',
     -- otherwise the user gets a weird error for non-existing files.
@@ -959,7 +952,8 @@ cmd_load' file argv unsolvedOK mode cmd = do
 withCurrentFile :: CommandM a -> CommandM a
 withCurrentFile m = do
   mfile <- gets $ fmap currentFilePath . theCurrentFile
-  localTC (\ e -> e { envCurrentPath = mfile }) m
+  i <- traverse idFromFile mfile
+  localTC (\ e -> e { envCurrentPath = i }) m
 
 atTopLevel :: CommandM a -> CommandM a
 atTopLevel cmd = liftCommandMT B.atTopLevel cmd

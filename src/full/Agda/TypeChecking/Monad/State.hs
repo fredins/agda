@@ -10,6 +10,7 @@ import Control.Monad.Trans       (MonadIO, liftIO)
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 
 import Data.Maybe
+import qualified Data.EnumMap.Strict as EnumMap
 import qualified Data.HashMap.Strict as HMap
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -19,6 +20,7 @@ import Agda.Benchmarking
 
 import Agda.Compiler.Backend.Base (pattern Backend, backendName, mayEraseType)
 
+import Agda.Interaction.Library ( classifyBuiltinModule_ )
 import Agda.Interaction.Response
   (InteractionOutputCallback, Response)
 
@@ -40,8 +42,10 @@ import Agda.TypeChecking.Positivity.Occurrence
 import Agda.TypeChecking.CompiledClause
 
 import qualified Agda.Utils.BiMap as BiMap
+import Agda.Utils.FileId ( File, getIdFile, registerFileId' )
 import Agda.Utils.Lens
 import qualified Agda.Utils.List1 as List1
+import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Syntax.Common.Pretty
 import Agda.Utils.Tuple
@@ -51,44 +55,30 @@ import Agda.Utils.Impossible
 -- | Resets the non-persistent part of the type checking state.
 
 resetState :: TCM ()
-resetState = do
-    pers <- getsTC stPersistentState
-    putTC $ initState { stPersistentState = pers }
+resetState = modifyTC \ s -> initStateFromPersistentState (s ^. lensPersistentState)
 
 -- | Resets all of the type checking state.
 --
---   Keep only 'Benchmark' and backend information.
+--   Keep only the session state (backend information, 'Benchmark', file ids).
 
 resetAllState :: TCM ()
-resetAllState = do
-    b <- getBenchmark
-    backends <- useTC stBackends
-    putTC $ updatePersistentState (\ s -> s { stBenchmark = b }) initState
-    stBackends `setTCLens` backends
--- resetAllState = putTC initState
+resetAllState = modifyTC \ s -> initStateFromSessionState (s ^. lensSessionState)
+
+-- | Overwrite the 'TCState', but not the 'SessionTCState' part.
+putTCPreservingSession :: TCState -> TCM ()
+putTCPreservingSession = bracket_ (useTC lensSessionState) (setTCLens lensSessionState) . putTC
 
 -- | Restore 'TCState' after performing subcomputation.
 --
---   In contrast to 'Agda.Utils.Monad.localState', the 'Benchmark'
---   info from the subcomputation is saved.
+--   In contrast to 'Agda.Utils.Monad.localState', the
+--   'SessionTCState' from the subcomputation is saved.
 localTCState :: TCM a -> TCM a
-localTCState = bracket_ getTC (\ s -> do
-   b <- getBenchmark
-   putTC s
-   modifyBenchmark $ const b)
+localTCState = bracket_ getTC putTCPreservingSession
 
 -- | Same as 'localTCState' but also returns the state in which we were just
 --   before reverting it.
 localTCStateSaving :: TCM a -> TCM (a, TCState)
-localTCStateSaving compute = do
-  oldState <- getTC
-  result <- compute
-  newState <- getTC
-  do
-    b <- getBenchmark
-    putTC oldState
-    modifyBenchmark $ const b
-  return (result, newState)
+localTCStateSaving compute = localTCState $ liftA2 (,) compute getTC
 
 -- | Same as 'localTCState' but keep all warnings.
 localTCStateSavingWarnings :: TCM a -> TCM a
@@ -96,19 +86,6 @@ localTCStateSavingWarnings compute = do
   (result, newState) <- localTCStateSaving compute
   modifyTC $ over stTCWarnings $ const $ newState ^. stTCWarnings
   return result
-
-data SpeculateResult = SpeculateAbort | SpeculateCommit
-
--- | Allow rolling back the state changes of a TCM computation.
-speculateTCState :: TCM (a, SpeculateResult) -> TCM a
-speculateTCState m = do
-  ((x, res), newState) <- localTCStateSaving m
-  case res of
-    SpeculateAbort  -> return x
-    SpeculateCommit -> x <$ putTC newState
-
-speculateTCState_ :: TCM SpeculateResult -> TCM ()
-speculateTCState_ m = void $ speculateTCState $ ((),) <$> m
 
 -- | A fresh TCM instance.
 --
@@ -120,21 +97,24 @@ speculateTCState_ m = void $ speculateTCState $ ((),) <$> m
 
 freshTCM :: TCM a -> TCM (Either TCErr a)
 freshTCM m = do
+
+  -- Run m in fresh TCM that only kept the current persistent state.
   ps <- useTC lensPersistentState
-  let s = set lensPersistentState ps initState
-  r <- liftIO $ (Right <$> runTCM initEnv s m) `E.catch` (return . Left)
+  let s0 = initStateFromPersistentState ps
+  r <- liftIO $ (Right <$> runTCM initEnv s0 m) `E.catch` (return . Left)
+
+  -- Keep m's changes to the persistent state, if possible.
+  let keepPersistent s = setTCLens lensPersistentState $ s ^. lensPersistentState
   case r of
-    Right (a, s) -> do
-      setTCLens lensPersistentState $ s ^. lensPersistentState
-      return $ Right a
-    Left err -> do
+    Right (a, s) -> Right a <$ keepPersistent s
+    Left err -> Left err <$
       case err of
-        TypeError { tcErrState = s } ->
-          setTCLens lensPersistentState $ s ^. lensPersistentState
-        IOException (Just s) _ _ ->
-          setTCLens lensPersistentState $ s ^. lensPersistentState
-        _ -> return ()
-      return $ Left err
+        TypeError { tcErrState = s } -> keepPersistent s
+        IOException (Just s) _ _     -> keepPersistent s
+        IOException Nothing  _ _     -> return ()
+        GenericException _           -> return ()
+        ParserError _                -> return ()
+        PatternErr _                 -> return ()
 
 ---------------------------------------------------------------------------
 -- * Lens for persistent states and its fields
@@ -342,6 +322,56 @@ updateDefBlocked :: (Blocked_ -> Blocked_) -> Definition -> Definition
 updateDefBlocked f def@Defn{ defBlocked = b } = def { defBlocked = f b }
 
 ---------------------------------------------------------------------------
+-- * File identification
+---------------------------------------------------------------------------
+
+-- | Translate an absolute path to a file id, and register a new file id
+--   if the path has not seen before.
+--   Also register whether the path belongs to one of Agda's builtin modules.
+--
+registerFileIdWithBuiltin :: File -> FileDictWithBuiltins -> (FileId, FileDictWithBuiltins)
+registerFileIdWithBuiltin f (FileDictWithBuiltins d b primLibDir) =
+  (fi, FileDictWithBuiltins d' b' primLibDir)
+  where
+    ((fi, new), d') = registerFileId' f d
+    b' = case classifyBuiltinModule_ primLibDir f of
+      Nothing -> b
+      Just c  -> EnumMap.insert fi c b
+
+instance MonadIO m => MonadFileId (TCMT m) where
+  fileFromId fi = useTC stFileDict <&> (`getIdFile` fi)
+  idFromFile = stateTCLens stFileDict . registerFileIdWithBuiltin
+
+-- | Does the given 'FileId' belong to one of Agda's builtin modules?
+
+isBuiltinModule :: ReadTCState m => FileId -> m (Maybe IsBuiltinModule)
+isBuiltinModule fi = EnumMap.lookup fi <$> useTC stBuiltinModuleIds
+
+-- | Does the given 'FileId' belong to one of Agda's builtin modules that only uses safe postulates?
+--
+-- Implies @isJust . 'isBuiltinModule'@.
+
+isBuiltinModuleWithSafePostulates :: ReadTCState m => FileId -> m Bool
+isBuiltinModuleWithSafePostulates fi = do
+  isBuiltinModule fi <&> \case
+    Nothing                                -> False
+    Just IsBuiltinModule                   -> False
+    Just IsBuiltinModuleWithSafePostulates -> True
+    Just IsPrimitiveModule                 -> True
+
+-- | Does the given 'FileId' belong to one of Agda's magical primitive modules?
+--
+-- Implies 'isBuiltinModuleWithSafePostulates'.
+
+isPrimitiveModule :: ReadTCState m => FileId -> m Bool
+isPrimitiveModule  fi = do
+  isBuiltinModule fi <&> \case
+    Nothing                                -> False
+    Just IsBuiltinModule                   -> False
+    Just IsBuiltinModuleWithSafePostulates -> False
+    Just IsPrimitiveModule                 -> True
+
+---------------------------------------------------------------------------
 -- * Top level module
 ---------------------------------------------------------------------------
 
@@ -494,28 +524,6 @@ lookupSinglePatternSyn x = do
             case Map.lookup x si of
                 Just d  -> return d
                 Nothing -> notInScopeError $ qnameToConcrete x
-
----------------------------------------------------------------------------
--- * Benchmark
----------------------------------------------------------------------------
-
--- | Lens getter for 'Benchmark' from 'TCState'.
-theBenchmark :: TCState -> Benchmark
-theBenchmark = stBenchmark . stPersistentState
-
-{-# INLINE updateBenchmark #-}
--- | Lens map for 'Benchmark'.
-updateBenchmark :: (Benchmark -> Benchmark) -> TCState -> TCState
-updateBenchmark f = updatePersistentState $ \ s -> s { stBenchmark = f (stBenchmark s) }
-
--- | Lens getter for 'Benchmark' from 'TCM'.
-getBenchmark :: TCM Benchmark
-getBenchmark = getsTC $ theBenchmark
-
-{-# INLINE modifyBenchmark #-}
--- | Lens modify for 'Benchmark'.
-modifyBenchmark :: (Benchmark -> Benchmark) -> TCM ()
-modifyBenchmark = modifyTC' . updateBenchmark
 
 ---------------------------------------------------------------------------
 -- * Instance definitions

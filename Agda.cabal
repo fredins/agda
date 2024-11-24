@@ -423,11 +423,13 @@ library
     , bytestring           >= 0.10.10.1 && < 0.13
     , case-insensitive     >= 1.2.1.0   && < 1.3
     , containers           >= 0.6.2.1   && < 0.8
+        -- containers-0.6.3.1 adds IntSet.mapMonotonic, but its too young for GHC 8.8
     , data-hash            >= 0.2.0.1   && < 0.3
     , deepseq              >= 1.4.4.0   && < 1.6
     , directory            >= 1.3.6.0   && < 1.4
     , dlist                >= 0.8.0.8   && < 1.1
     , edit-distance        >= 0.2.2.1   && < 0.3
+    , enummapset           >= 0.6.0.3   && < 0.8
     , equivalence          >= 0.3.5     && < 0.5
     , exceptions           >= 0.10.4    && < 0.11
     , filepath             >= 1.4.2.1   && < 1.6
@@ -784,6 +786,7 @@ library
       Agda.Utils.Fail
       Agda.Utils.Favorites
       Agda.Utils.FileName
+      Agda.Utils.FileId
       Agda.Utils.Float
       Agda.Utils.Functor
       Agda.Utils.Function
